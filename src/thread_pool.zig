@@ -39,7 +39,7 @@ pub fn start(self: *ThreadPool, comptime function: anytype, args: anytype) !void
     return;
 }
 
-pub fn deinit(self: *ThreadPool) void {
+pub fn deinit(self: ThreadPool) void {
     const allocator = self.allocator;
     allocator.free(self.threads);
 }

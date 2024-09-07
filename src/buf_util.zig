@@ -15,7 +15,7 @@ pub const BinaryBuilder = struct {
         return .{ .allocator = allocator, .buf = &.{}, .buf_size = buf_size, .size = 0 };
     }
 
-    pub fn to_array(self: *Self) ![]u8 {
+    pub fn collect(self: *Self) ![]u8 {
         if (self.size == 0) {
             return &.{};
         }
@@ -37,11 +37,23 @@ pub const BinaryBuilder = struct {
         if (self.size == 0) {
             const allocator = self.allocator;
             self.buf = try allocator.alloc(u8, self.buf_size);
+            self.buf[0] = byte;
+            self.size += 1;
         } else {
             try self.ensure_enough_space(self.size + 1);
             self.buf[self.size] = byte;
             self.size += 1;
         }
+    }
+
+    pub fn push(self: *Self, bytes: []const u8) Allocator.Error!void {
+        if (self.size == 0) {
+            const allocator = self.allocator;
+            self.buf = try allocator.alloc(u8, self.buf_size);
+        }
+        try self.ensure_enough_space(self.size + bytes.len);
+        std.mem.copyForwards(u8, self.buf[self.size..], bytes);
+        self.size += bytes.len;
     }
 
     // pub fn push(self: *Self, buf: []const u8) !void {

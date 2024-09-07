@@ -16,6 +16,15 @@ pub const DataType = enum {
     Array,
 };
 
+pub const ValueType = enum {
+    String,
+    Int,
+};
+
+pub const Value = struct { typ: DataType, val: union {
+    string: []u8,
+} };
+
 pub const Command = enum {
     APPEND,
     AUTH,
