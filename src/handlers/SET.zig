@@ -4,7 +4,7 @@ const common = @import("./common.zig");
 const Context = common.Context;
 const Store = @import("../store/store.zig").Store;
 
-pub fn SET(ctx: *Context) !void {
+pub fn set(ctx: *Context) !void {
     if (!try ctx.minArgNum(2))
         return;
 

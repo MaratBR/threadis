@@ -3,8 +3,8 @@ const common = @import("./common.zig");
 
 const Context = common.Context;
 
-pub fn CLIENT(ctx: *Context) !void {
-    const log = std.log.scoped(.CLIENT);
+pub fn client(ctx: *Context) !void {
+    const log = std.log.scoped(.client);
 
     if (!try ctx.minArgNum(1)) return;
 
@@ -27,10 +27,21 @@ pub fn CLIENT(ctx: *Context) !void {
     const sub_command = maybe_sub_command.?;
 
     switch (sub_command) {
-        .ID => {
+        .id => {
             if (!try ctx.exactArgNum(1)) return;
             try ctx.redis_writer.writeI64(ctx.client.c().id);
             log.info("CLIENT ID to {}", .{ctx.conn_address});
+        },
+
+        .setname => {
+            if (!try ctx.exactArgNum(2)) return;
+            const maybe_name = try ctx.readString();
+            if (maybe_name) |name| {
+                defer name.deinit();
+                try ctx.client.c().setName(name.buf);
+            } else {
+                ctx.client.c().removeName();
+            }
         },
 
         else => {

@@ -132,8 +132,6 @@ pub const Context = struct {
             return;
         }
 
-        if (self.command_arguments - self.read_command_arguments == 0) return;
-
         try self._redis_reader.discardNValues(self.command_arguments - self.read_command_arguments);
     }
 };

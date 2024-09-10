@@ -16,28 +16,22 @@ const Client = @import("./client.zig");
 
 const Arc = @import("./lib/zigrc.zig").Arc;
 
-const log = std.log.scoped(.Handler);
+const log = std.log.scoped(.handler);
 
 const Handler = @This();
 
-// allocator: std.mem.Allocator,
-pool: coro.ThreadPool,
-sched: coro.Scheduler,
 allocator: std.mem.Allocator,
 store: *Store,
 client_registry: *Client.Registry,
 
-pub fn init(allocator: std.mem.Allocator, store: *Store, client_registry: *Client.Registry) !Handler {
-    const thread_pool = try coro.ThreadPool.init(allocator, .{ .max_threads = 16 });
-    const sched = try coro.Scheduler.init(allocator, .{});
+sched: *coro.Scheduler,
+thread_pool: *coro.ThreadPool,
 
-    return .{ .allocator = allocator, .pool = thread_pool, .sched = sched, .client_registry = client_registry, .store = store };
+pub fn init(allocator: std.mem.Allocator, store: *Store, client_registry: *Client.Registry, sched: *coro.Scheduler, thread_pool: *coro.ThreadPool) !Handler {
+    return .{ .allocator = allocator, .thread_pool = thread_pool, .sched = sched, .client_registry = client_registry, .store = store };
 }
 
-pub fn deinit(self: *Handler) void {
-    self.pool.deinit();
-    self.sched.deinit();
-}
+pub fn deinit(_: *Handler) void {}
 
 pub fn submitConnection(self: *Handler, conn: socket_util.Connection) void {
     const conn_data = blk: {
@@ -50,12 +44,21 @@ pub fn submitConnection(self: *Handler, conn: socket_util.Connection) void {
         break :blk data;
     };
 
-    _ = self.pool.spawnForCompletition(&self.sched, handleConnection, .{ self.allocator, conn_data }, .{ .allocator = self.allocator }) catch |err| {
-        log.err("failed to spawn corutine for completion for client {}: {}", .{ conn.client_addr, err });
+    log.debug("passing connection {} to the thread pool", .{conn.addr});
+
+    _ = self.sched.spawn(handleConnection, .{ self.allocator, conn_data }, .{}) catch |err| {
+        log.err("failed to spawn corutine for completion for client {}: {}", .{ conn.addr, err });
         conn.close() catch |close_err| {
             log.err("failed to close connection after failing to spawn handler corutine: {}. POTENTIAL MEMORY LEAK", .{close_err});
         };
     };
+
+    // _ = self.thread_pool.spawnForCompletition(self.sched, handleConnection, .{ self.allocator, conn_data }, .{ .allocator = self.allocator }) catch |err| {
+    //     log.err("failed to spawn corutine for completion for client {}: {}", .{ conn.addr, err });
+    //     conn.close() catch |close_err| {
+    //         log.err("failed to close connection after failing to spawn handler corutine: {}. POTENTIAL MEMORY LEAK", .{close_err});
+    //     };
+    // };
 }
 
 pub fn connPipe(self: *Handler) ConnectionPipe {
@@ -86,6 +89,8 @@ const ConnectionData = struct {
 fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !void {
     const log_handleConnection = std.log.scoped(.handleConnection);
 
+    log_handleConnection.debug("preparing connection {}...", .{conn_data.conn.addr});
+
     // create reader and writer for this connection
     var conn_reader = try conn_data.conn.reader(allocator);
     defer conn_reader.deinit();
@@ -94,10 +99,12 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
     var r = redis_proto.RedisReader.init(allocator, conn_reader.any());
     var w = redis_proto.RedisWriter.init(allocator, conn_writer.any());
 
-    var command_ctx = handlers.Context.initUndefined(allocator, conn_data.client.retain(), &r, &w, conn_data.store, conn_data.conn.client_addr);
+    var command_ctx = handlers.Context.initUndefined(allocator, conn_data.client.retain(), &r, &w, conn_data.store, conn_data.conn.addr);
     defer command_ctx.deinit();
 
     var closed = false;
+
+    log_handleConnection.debug("waiting for commands from {}...", .{conn_data.conn.addr});
 
     while (true) {
         handleCommand(&command_ctx) catch |err| {
@@ -118,24 +125,25 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
                 }
             }
 
-            log_handleConnection.err("error encountered while processing command from {}", .{conn_data.conn.client_addr});
+            log_handleConnection.err("error encountered while processing command from {}", .{conn_data.conn.addr});
             return err;
         };
     }
 
     if (!closed) {
         conn_data.conn.close() catch |err| {
-            std.debug.panic("failed to close connection with peer {}: {}", .{ conn_data.conn.client_addr, err });
+            std.debug.panic("failed to close connection with peer {}: {}", .{ conn_data.conn.addr, err });
         };
-        log_handleConnection.debug("closed connection to {}", .{conn_data.conn.client_addr});
+        log_handleConnection.debug("closed connection to {}", .{conn_data.conn.addr});
     } else {
-        log_handleConnection.debug("closed connection to {} by peer", .{conn_data.conn.client_addr});
+        log_handleConnection.debug("closed connection to {} by peer", .{conn_data.conn.addr});
         // w.writePing()
     }
 }
 
 fn handleCommand(ctx: *handlers.Context) !void {
-    const log_handleCommand = std.log.scoped(.handleCommand);
+    const log_handleCommand = std.log.scoped(.handler_handleCommand);
+
     const command_header = ctx.readCommandHeader() catch |err| {
         if (err == error.EmptyCommandHeader) {
             return;
@@ -146,10 +154,11 @@ fn handleCommand(ctx: *handlers.Context) !void {
 
     const handler = handlers.getCommandHandler(command_header.command);
 
-    log_handleCommand.debug("executing handler for {} command with {} arguments", .{ command_header.command, command_header.arguments_count });
+    log_handleCommand.debug("executing handler for {s} command with {} arguments", .{ @tagName(command_header.command), command_header.arguments_count });
     try handler(ctx);
+    log_handleCommand.debug("finished executing handler for {s} command", .{@tagName(command_header.command)});
 
     if (ctx.read_command_arguments != ctx.command_arguments) {
-        std.debug.panic("command handler for {} did not read all arguments from the client stream but finished successfully", .{command_header.command});
+        log_handleCommand.err("command handler for {s} did not read all arguments from the client stream but finished successfully, read_command_arguments={}, command_arguments={}", .{ @tagName(command_header.command), ctx.read_command_arguments, ctx.command_arguments });
     }
 }

@@ -23,11 +23,24 @@ pub fn setName(self: *Client, name: []const u8) Allocator.Error!void {
     defer self.rw.unlock();
 
     if (self.name.len > 0) {
-        allocator.free(name);
+        allocator.free(self.name);
         self.name = &.{};
     }
 
-    self.name = try allocator.dupe(u8, name);
+    if (name.len > 0) {
+        self.name = try allocator.dupe(u8, name);
+    }
+}
+
+pub fn removeName(self: *Client) void {
+    self.rw.lock();
+    defer self.rw.unlock();
+
+    if (self.name.len > 0) {
+        const allocator = self.allocator;
+        allocator.free(self.name);
+        self.name = &.{};
+    }
 }
 
 pub fn writeName(self: *const Client, w: AnyWriter) anyerror!usize {

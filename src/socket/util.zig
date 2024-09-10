@@ -9,7 +9,7 @@ pub const Options = struct { addr: std.net.Address };
 pub const Connection = struct {
     client_sock: posix.socket_t,
 
-    client_addr: std.net.Address,
+    addr: std.net.Address,
 
     pub fn reader(self: Connection, allocator: Allocator) Allocator.Error!Reader {
         return Reader.init(allocator, 4096, self.client_sock);
@@ -144,8 +144,10 @@ pub const Connection = struct {
 pub const StartError = coro.io.Error || aio.Socket.Error || std.posix.SetSockOptError || std.posix.BindError || std.posix.ListenError;
 
 pub fn create(options: Options) StartError!posix.socket_t {
-    const socket = try posix.socket(std.posix.AF.INET, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, std.posix.IPPROTO.TCP);
-    // errdefer std.posix.close(socket);
+    var socket: posix.socket_t = undefined;
+
+    try coro.io.single(aio.Socket{ .domain = posix.AF.INET, .flags = posix.SOCK.STREAM | posix.SOCK.CLOEXEC, .protocol = posix.IPPROTO.TCP, .out_socket = &socket });
+
     try std.posix.setsockopt(socket, std.posix.SOL.SOCKET, std.posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
     if (@hasDecl(std.posix.SO, "REUSEPORT")) {
         try std.posix.setsockopt(socket, std.posix.SOL.SOCKET, std.posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
@@ -158,22 +160,21 @@ pub fn create(options: Options) StartError!posix.socket_t {
     return socket;
 }
 
-pub const AcceptError = posix.AcceptError;
+pub const AcceptError = aio.Accept.Error || coro.io.Error;
 
-pub fn acceptConnection(sockfd: posix.socket_t) AcceptError!Connection {
-    var client_addr: posix.sockaddr = undefined;
-    var client_addr_len: posix.socklen_t = @sizeOf(@TypeOf(client_addr));
+pub fn accept(sockfd: posix.socket_t) AcceptError!Connection {
+    var addr: posix.sockaddr = undefined;
+    var addr_len: posix.socklen_t = @sizeOf(@TypeOf(addr));
+    var client_sock: posix.socket_t = undefined;
 
-    const client_sock = try posix.accept(sockfd, &client_addr, &client_addr_len, 0);
-    const addr = std.net.Address{ .any = client_addr };
-    return .{ .client_addr = addr, .client_sock = client_sock };
+    try coro.io.single(aio.Accept{ .socket = sockfd, .inout_addrlen = &addr_len, .out_addr = &addr, .out_socket = &client_sock });
+
+    const client_addr = std.net.Address{ .any = addr };
+    return .{ .addr = client_addr, .client_sock = client_sock };
 }
 
 pub fn close(sockfd: posix.socket_t) void {
-    switch (@import("builtin").os.tag) {
-        .windows => std.os.windows.closesocket(sockfd) catch |win_err| {
-            std.log.err("failed to close socket on windows: {}", .{win_err});
-        },
-        else => posix.close(sockfd),
-    }
+    coro.io.single(aio.CloseSocket{ .socket = sockfd }) catch |err| {
+        std.log.err("failed to close socket: {}", .{err});
+    };
 }

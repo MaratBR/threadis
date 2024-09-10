@@ -229,9 +229,8 @@ pub const RedisReader = struct {
         if (str == null) {
             return RedisReaderErr.InvalidEnum;
         }
-        _ = std.ascii.upperString(str.?, str.?);
+        _ = std.ascii.lowerString(str.?, str.?);
         const value: ?T = std.meta.stringToEnum(T, str.?);
-        std.debug.print("[RedisReader] ENUM (string): {s}\n", .{str.?});
         self.allocator.free(str.?);
         if (value == null) {
             return RedisReaderErr.InvalidEnum;
@@ -291,8 +290,6 @@ pub const RedisReader = struct {
 
         var len = try self.internalReadI64();
         if (len < -1) len = -1;
-
-        std.debug.print("[RedisReader] ARRAY: len={}\n", .{len});
 
         return len;
     }

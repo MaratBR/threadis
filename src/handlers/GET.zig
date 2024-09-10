@@ -2,7 +2,7 @@ const common = @import("./common.zig");
 
 const Context = common.Context;
 
-pub fn GET(ctx: *Context) !void {
+pub fn get(ctx: *Context) !void {
     if (ctx.command_arguments != 1) {
         return error.InvalidNumberOfArguments;
     }
