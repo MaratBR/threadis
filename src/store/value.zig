@@ -44,6 +44,13 @@ pub fn copy(self: *const UnmanagedEntryValue, allocator: Allocator) Allocator.Er
     }
 }
 
+pub inline fn bytesLen(self: *const UnmanagedEntryValue) usize {
+    return switch (self.type) {
+        .binary => self.raw.binary.buf.len,
+        .i64 => 4,
+    };
+}
+
 pub fn deinit(self: UnmanagedEntryValue, allocator: Allocator) void {
     switch (self.type) {
         Type.binary => {
@@ -71,10 +78,10 @@ pub const UnmanagedBuffer = struct {
         return .{ .buf = buf };
     }
 
-    pub fn append(self: Self, allocator: Allocator, buf: []const u8) Allocator.Error!void {
+    pub fn append(self: *Self, allocator: Allocator, buf: []const u8) Allocator.Error!void {
         if (buf.len == 0) return;
 
-        try allocator.realloc(self.buf, self.buf.len + buf.len);
+        self.buf = try allocator.realloc(self.buf, self.buf.len + buf.len);
         std.mem.copyForwards(u8, self.buf[self.buf.len - buf.len ..], buf);
     }
 

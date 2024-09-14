@@ -12,7 +12,7 @@ fn commandNoop(ctx: *Context) !void {
 
 pub fn getCommandHandler(command: Command) CommandHandlerFn {
     return switch (command) {
-        .append => commandNoop,
+        .append => @import("append.zig").append,
         .auth => commandNoop,
         .bgrewriteaof => commandNoop,
         .bgsave => commandNoop,
@@ -110,7 +110,7 @@ pub fn getCommandHandler(command: Command) CommandHandlerFn {
         .publish => commandNoop,
         .pubsub => commandNoop,
         .punsubscribe => commandNoop,
-        .quit => commandNoop,
+        .quit => @import("quit.zig").quit,
         .randomkey => commandNoop,
         .readonly => commandNoop,
         .readwrite => commandNoop,

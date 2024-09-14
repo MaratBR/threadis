@@ -143,7 +143,7 @@ pub const RedisReader = struct {
         return;
     }
 
-    fn peekTypePrefix(self: *Self) RedisReaderErr!DataType {
+    inline fn peekTypePrefix(self: *Self) RedisReaderErr!DataType {
         const b = self.peekByte();
 
         const typ = switch (b) {
@@ -164,7 +164,7 @@ pub const RedisReader = struct {
         return typ;
     }
 
-    fn peekDigit(self: *Self) RedisReaderErr!u8 {
+    inline fn peekDigit(self: *Self) RedisReaderErr!u8 {
         const b = self.peekByte();
         if (b >= '0' and b <= '9') {
             return b - '0';
@@ -239,7 +239,7 @@ pub const RedisReader = struct {
         }
     }
 
-    pub fn readCommand(self: *Self) RedisReaderErr!Command {
+    pub inline fn readCommand(self: *Self) RedisReaderErr!Command {
         return self.readEnum(Command);
     }
 
@@ -380,22 +380,41 @@ pub const RedisWriter = struct {
         return self.write(def.CRLF);
     }
 
-    pub fn writeI64(self: *Self, v: i64) RedisWriterErr!void {
+    pub inline fn writeI64(self: *Self, v: i64) RedisWriterErr!void {
+        return self.writeInteger(i64, v);
+    }
+
+    pub inline fn writeUsize(self: *Self, v: usize) RedisWriterErr!void {
+        return self.writeInteger(usize, v);
+    }
+
+    inline fn writeInteger(self: *Self, comptime TInt: type, v: TInt) RedisWriterErr!void {
         try self.writeByte(def.INT_PREFIX);
-        try self.internalWriteI64(v);
+        try self.internalWriteInteger(TInt, v);
         try self.writeCRLF();
     }
 
-    pub fn internalWriteI64(self: *Self, v: i64) RedisWriterErr!void {
-        const max_len = 20;
+    inline fn internalWriteInteger(self: *Self, comptime TInt: type, v: TInt) RedisWriterErr!void {
+        const max_len = (comptime maxIntStringSize(TInt)) + 1;
         var buf: [max_len]u8 = undefined;
-        buf[0] = ':';
         const numAsString = std.fmt.bufPrint(&buf, "{}", .{v}) catch {
             std.debug.panic("std.fmt.bufPrint failed", .{});
         };
 
         return self.write(buf[0..numAsString.len]);
     }
+
+    // fn internalWriteI64(self: *Self, v: i64) RedisWriterErr!void {
+    //     return self.internalWriteInteger(i64, v);
+    //     // const max_len = 20;
+    //     // var buf: [max_len]u8 = undefined;
+    //     // buf[0] = ':';
+    //     // const numAsString = std.fmt.bufPrint(&buf, "{}", .{v}) catch {
+    //     //     std.debug.panic("std.fmt.bufPrint failed", .{});
+    //     // };
+
+    //     // return self.write(buf[0..numAsString.len]);
+    // }
 
     pub fn writeValue(self: *Self, v: *const Entry.Value) RedisWriterErr!void {
         switch (v.type) {
@@ -447,3 +466,29 @@ pub const RedisWriter = struct {
         return self.write(&buf);
     }
 };
+
+fn maxIntStringSize(comptime TInt: type) comptime_int {
+    var len: usize = 0;
+
+    const type_info = @typeInfo(TInt);
+
+    switch (type_info) {
+        .Int => {
+            if (type_info.Int.signedness == .signed) {
+                len += 1;
+            }
+        },
+        else => {
+            @compileError("maxIntStringSize expects type argument to be an integer of some kind");
+        },
+    }
+
+    var v: usize = std.math.maxInt(TInt);
+
+    while (v != 0) {
+        len += 1;
+        v /= 10;
+    }
+
+    return len;
+}

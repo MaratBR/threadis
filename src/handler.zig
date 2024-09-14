@@ -103,6 +103,7 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
     defer command_ctx.deinit();
 
     var closed = false;
+    var received_quit = false;
 
     log_handleConnection.debug("waiting for commands from {}...", .{conn_data.conn.addr});
 
@@ -123,6 +124,10 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
                     closed = true;
                     break;
                 }
+            } else if (err == error.Quit) {
+                // connection termination is requested
+                received_quit = true;
+                break;
             }
 
             log_handleConnection.err("error encountered while processing command from {}", .{conn_data.conn.addr});
@@ -131,13 +136,15 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
     }
 
     if (!closed) {
+        if (received_quit) {
+            log_handleConnection.debug("received quit command from peer {}", .{conn_data.conn.addr});
+        }
         conn_data.conn.close() catch |err| {
             std.debug.panic("failed to close connection with peer {}: {}", .{ conn_data.conn.addr, err });
         };
         log_handleConnection.debug("closed connection to {}", .{conn_data.conn.addr});
     } else {
         log_handleConnection.debug("closed connection to {} by peer", .{conn_data.conn.addr});
-        // w.writePing()
     }
 }
 

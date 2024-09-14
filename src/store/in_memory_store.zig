@@ -56,6 +56,10 @@ pub const Entry = struct {
         try self.value.raw.binary.append(self.allocator, append_buf);
     }
 
+    pub inline fn len(self: *const Self) usize {
+        return self.value.bytesLen();
+    }
+
     pub fn deinit(self: *Self) void {
         std.debug.assert(!self.isBorrowed());
         self.value.deinit(self.allocator);

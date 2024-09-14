@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const SIMPLE_STRING_PREFIX = '+';
 pub const STRING_PREFIX = '$';
 pub const ARRAY_PREFIX = '*';
@@ -217,3 +219,34 @@ pub const Command = enum {
 };
 
 pub const ClientCommand = enum { id, kill, list, pause, reply, setname, unblock };
+
+// pub fn EnumStruct(comptime T: type, comptime TValue: type, comptime default_value: TValue) type {
+//     switch (@typeInfo(T)) {
+//         .Enum => {
+//             const fields = std.meta.fields(T);
+
+//             var struct_fields: [fields.len]std.builtin.Type.StructField = undefined;
+
+//             inline for (fields, 0..) |f, i| {
+//                 struct_fields[i] = .{ .name = f.name, .type = TValue, .default_value = &default_value, .alignment = 0, .is_comptime = false };
+//             }
+
+//             const type_info: std.builtin.Type = .{
+//                 .Struct = .{
+//                     .layout = .auto,
+//                     .is_tuple = false,
+//                     .decls = &.{},
+
+//                     // array of fields, one field per enum value
+//                     .fields = &struct_fields,
+//                 },
+//             };
+
+//             return @Type(type_info);
+//         },
+
+//         else => {
+//             @compileError("EnumStruct only supports enums as the first argument");
+//         },
+//     }
+// }
