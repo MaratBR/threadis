@@ -25,6 +25,10 @@ pub const std_options: std.Options = .{
 const log = std.log.scoped(.main);
 
 pub fn main() !void {
+    const pid = getPID();
+    log.info("current process PID: {}", .{pid});
+    writePidToFile(pid);
+
     if (builtin.target.os.tag == .windows) {
         const utf8_codepage: c_uint = 65001;
         _ = std.os.windows.kernel32.SetConsoleOutputCP(utf8_codepage);
@@ -43,7 +47,7 @@ pub fn main() !void {
 
     var sched = try coro.Scheduler.init(allocator, .{});
     defer sched.deinit();
-    var thread_pool = try coro.ThreadPool.init(gpa.allocator(), .{});
+    var thread_pool = try coro.ThreadPool.init(gpa.allocator(), .{ .max_threads = 1 });
     defer thread_pool.deinit();
 
     var handler = try Handler.init(allocator, &store, &client_registry, &sched, &thread_pool);
@@ -52,8 +56,7 @@ pub fn main() !void {
     const server_options = getServerOptions();
     _ = try sched.spawn(server.server, .{ server_options, handler.connPipe() }, .{});
 
-    var sched_thread = try std.Thread.spawn(.{ .allocator = allocator }, runSched, .{&sched});
-    sched_thread.join();
+    runSched(&sched);
 }
 
 fn runSched(sched: *coro.Scheduler) void {
@@ -69,4 +72,35 @@ fn getServerOptions() server.Options {
         std.debug.panic("failed to parse server ip: {}", .{err});
     };
     return .{ .addr = server_addr };
+}
+
+fn getPID() switch (builtin.os.tag) {
+    .windows => u32,
+    else => i32,
+} {
+    return switch (builtin.os.tag) {
+        .windows => {
+            return std.os.windows.kernel32.GetCurrentProcessId();
+        },
+        else => {
+            return std.os.linux.getpid();
+        },
+    };
+}
+
+pub fn writePidToFile(pid: anytype) void {
+    const file = std.fs.cwd().createFile("pid.txt", .{}) catch |err| {
+        std.debug.print("Failed to create file: {s}\n", .{@errorName(err)});
+        return;
+    };
+    defer file.close();
+    var buffer: [10]u8 = undefined;
+    const pid_string = std.fmt.bufPrint(&buffer, "{}", .{pid}) catch |err| {
+        std.debug.print("Failed to convert pid to string: {s}\n", .{@errorName(err)});
+        return;
+    };
+    file.writeAll(pid_string) catch |err| {
+        std.debug.print("Failed to write to file: {s}\n", .{@errorName(err)});
+        return;
+    };
 }

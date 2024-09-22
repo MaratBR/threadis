@@ -4,7 +4,7 @@ const common = @import("./common.zig");
 const Context = common.Context;
 const Store = @import("../store/store.zig").Store;
 
-pub fn append(ctx: *Context) !void {
+fn handle(ctx: *Context) !void {
     if (!try ctx.minArgNum(2))
         return;
 
@@ -40,3 +40,5 @@ pub fn append(ctx: *Context) !void {
         try ctx.redis_writer.writeUsize(borrowed_entry.entry.len());
     }
 }
+
+pub const append = common.CommandHandler(.{ .name = "append", .flags = .{ .write = true }, .arity = 2, .handler = handle });

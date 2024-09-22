@@ -1,204 +1,65 @@
 const std = @import("std");
-const common = @import("./common.zig");
+const common = @import("common.zig");
 const CommandHandlerFn = common.CommandHandlerFn;
-const Command = @import("../redis/redis_def.zig").Command;
+const redis = @import("../redis.zig");
 
 pub const Context = common.Context;
 
 fn commandNoop(ctx: *Context) !void {
-    std.log.warn("skipping unimplemented command {s}", .{@tagName(ctx.command)});
+    std.log.warn("skipping unimplemented command '{s}'", .{ctx.command});
     try ctx.discardRemainingArguments();
 }
 
-pub fn getCommandHandler(command: Command) CommandHandlerFn {
-    return switch (command) {
-        .append => @import("append.zig").append,
-        .auth => commandNoop,
-        .bgrewriteaof => commandNoop,
-        .bgsave => commandNoop,
-        .bitcount => commandNoop,
-        .bitfield => commandNoop,
-        .bitop => commandNoop,
-        .bitpos => commandNoop,
-        .blpop => commandNoop,
-        .brpop => commandNoop,
-        .brpoplpush => commandNoop,
-        .bzpopmax => commandNoop,
-        .bzpopmin => commandNoop,
-        .client => @import("client.zig").client,
-        .cluster => commandNoop,
-        .command => commandNoop,
-        .config => commandNoop,
-        .dbsize => commandNoop,
-        .debug => commandNoop,
-        .decr => commandNoop,
-        .decrby => commandNoop,
-        .del => commandNoop,
-        .discard => commandNoop,
-        .dump => commandNoop,
-        .echo => commandNoop,
-        .eval => commandNoop,
-        .evalsha => commandNoop,
-        .exec => commandNoop,
-        .exists => commandNoop,
-        .expire => commandNoop,
-        .expireat => commandNoop,
-        .flushall => commandNoop,
-        .flushdb => commandNoop,
-        .geoadd => commandNoop,
-        .geodecode => commandNoop,
-        .geodist => commandNoop,
-        .geoencode => commandNoop,
-        .geohash => commandNoop,
-        .geopos => commandNoop,
-        .georadius => commandNoop,
-        .georadiusbymember => commandNoop,
-        .get => @import("get.zig").get,
-        .getbit => commandNoop,
-        .getrange => commandNoop,
-        .getset => commandNoop,
-        .hdel => commandNoop,
-        .hexists => commandNoop,
-        .hget => commandNoop,
-        .hgetall => commandNoop,
-        .hincrby => commandNoop,
-        .hincrbyfloat => commandNoop,
-        .hkeys => commandNoop,
-        .hlen => commandNoop,
-        .hmget => commandNoop,
-        .hmset => commandNoop,
-        .hscan => commandNoop,
-        .hset => commandNoop,
-        .hsetnx => commandNoop,
-        .hstrlen => commandNoop,
-        .hvals => commandNoop,
-        .incr => commandNoop,
-        .incrby => commandNoop,
-        .incrbyfloat => commandNoop,
-        .info => commandNoop,
-        .keys => commandNoop,
-        .lastsave => commandNoop,
-        .lindex => commandNoop,
-        .linsert => commandNoop,
-        .llen => commandNoop,
-        .lpop => commandNoop,
-        .lpush => commandNoop,
-        .lpushx => commandNoop,
-        .lrange => commandNoop,
-        .lrem => commandNoop,
-        .lset => commandNoop,
-        .ltrim => commandNoop,
-        .memory => commandNoop,
-        .mget => commandNoop,
-        .migrate => commandNoop,
-        .monitor => commandNoop,
-        .move => commandNoop,
-        .mset => commandNoop,
-        .msetnx => commandNoop,
-        .multi => commandNoop,
-        .object => commandNoop,
-        .persist => commandNoop,
-        .pexpire => commandNoop,
-        .pexpireat => commandNoop,
-        .pfadd => commandNoop,
-        .pfcount => commandNoop,
-        .pfmerge => commandNoop,
-        .ping => @import("ping.zig").ping,
-        .psetex => commandNoop,
-        .psubscribe => commandNoop,
-        .pttl => commandNoop,
-        .publish => commandNoop,
-        .pubsub => commandNoop,
-        .punsubscribe => commandNoop,
-        .quit => @import("quit.zig").quit,
-        .randomkey => commandNoop,
-        .readonly => commandNoop,
-        .readwrite => commandNoop,
-        .rename => commandNoop,
-        .renamenx => commandNoop,
-        .replicaof => commandNoop,
-        .restore => commandNoop,
-        .role => commandNoop,
-        .rpop => commandNoop,
-        .rpoplpush => commandNoop,
-        .rpush => commandNoop,
-        .rpushx => commandNoop,
-        .sadd => commandNoop,
-        .save => commandNoop,
-        .scan => commandNoop,
-        .scard => commandNoop,
-        .script => commandNoop,
-        .sdiff => commandNoop,
-        .sdiffstore => commandNoop,
-        .select => commandNoop,
-        .set => @import("set.zig").set,
-        .setbit => commandNoop,
-        .setex => commandNoop,
-        .setnx => commandNoop,
-        .setrange => commandNoop,
-        .shutdown => commandNoop,
-        .sinter => commandNoop,
-        .sinterstore => commandNoop,
-        .sismember => commandNoop,
-        .slaveof => commandNoop,
-        .slowlog => commandNoop,
-        .smembers => commandNoop,
-        .smove => commandNoop,
-        .sort => commandNoop,
-        .spop => commandNoop,
-        .srandmember => commandNoop,
-        .srem => commandNoop,
-        .sscan => commandNoop,
-        .strlen => commandNoop,
-        .subscribe => commandNoop,
-        .sunion => commandNoop,
-        .sunionstore => commandNoop,
-        .swapdb => commandNoop,
-        .sync => commandNoop,
-        .time => commandNoop,
-        .touch => commandNoop,
-        .ttl => commandNoop,
-        .type => commandNoop,
-        .unlink => commandNoop,
-        .unsubscribe => commandNoop,
-        .unwatch => commandNoop,
-        .wait => commandNoop,
-        .watch => commandNoop,
-        .xack => commandNoop,
-        .xadd => commandNoop,
-        .xclaim => commandNoop,
-        .xdel => commandNoop,
-        .xgroup => commandNoop,
-        .xinfo => commandNoop,
-        .xlen => commandNoop,
-        .xpending => commandNoop,
-        .xrange => commandNoop,
-        .xread => commandNoop,
-        .xreadgroup => commandNoop,
-        .xrevrange => commandNoop,
-        .xtrim => commandNoop,
-        .zadd => commandNoop,
-        .zcard => commandNoop,
-        .zcount => commandNoop,
-        .zincrby => commandNoop,
-        .zinterstore => commandNoop,
-        .zlexcount => commandNoop,
-        .zpopmax => commandNoop,
-        .zpopmin => commandNoop,
-        .zrange => commandNoop,
-        .zrangebylex => commandNoop,
-        .zrangebyscore => commandNoop,
-        .zrank => commandNoop,
-        .zrem => commandNoop,
-        .zremrangebylex => commandNoop,
-        .zremrangebyrank => commandNoop,
-        .zremrangebyscore => commandNoop,
-        .zrevrange => commandNoop,
-        .zrevrangebylex => commandNoop,
-        .zrevrangebyscore => commandNoop,
-        .zrevrank => commandNoop,
-        .zscan => commandNoop,
-        .zscore => commandNoop,
-        .zunionstore => commandNoop,
-    };
+fn sendListOfCommands(ctx: *Context) !void {
+    try ctx.discardRemainingArguments();
+
+    try ctx.redis_writer.writeArrayHeader(@intCast(command_handlers.len));
+
+    inline for (command_handlers) |h| {
+        const decl: common.CommandDecl = h.decl;
+
+        try ctx.redis_writer.writeArrayHeader(6);
+        try ctx.redis_writer.writeComptimeSimpleString(decl.name);
+        try ctx.redis_writer.writeI64(decl.arity);
+        try ctx.redis_writer.writeEmptyArray();
+        try ctx.redis_writer.writeI64(decl.pos_first_key);
+        try ctx.redis_writer.writeI64(decl.pos_last_key);
+        try ctx.redis_writer.writeI64(decl.step_count_keys);
+    }
+}
+
+pub const command_command = common.CommandHandler(.{ .name = "command", .handler = sendListOfCommands });
+
+pub const command_handlers = .{
+    // append command
+    @import("append.zig").append,
+
+    // client command
+    @import("client.zig").client,
+
+    // get command
+    @import("get.zig").get,
+
+    // set command
+    @import("set.zig").set,
+
+    // ping command
+    @import("ping.zig").ping,
+
+    // quit command
+    @import("quit.zig").quit,
+
+    // command command
+    command_command,
+};
+
+pub fn getCommandHandler(command: []const u8) CommandHandlerFn {
+    // pretty inefficient, fix it in the future
+    inline for (command_handlers) |h| {
+        if (h.decl.is(command)) {
+            return h.decl.handler;
+        }
+    }
+
+    return commandNoop;
 }

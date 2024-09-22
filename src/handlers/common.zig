@@ -1,9 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const redis_proto = @import("../redis/redis_protocol.zig");
-const RedisReader = redis_proto.RedisReader;
-const RedisWriter = redis_proto.RedisWriter;
 const Connection = @import("../socket/util.zig").Connection;
 const Arc = @import("../lib/zigrc.zig").Arc;
 const Client = @import("../client.zig");
@@ -12,19 +9,19 @@ const Store = @import("../store/store.zig").Store;
 const String = @import("../util/string.zig");
 const buf_util = @import("../buf_util.zig");
 
-pub const redis = @import("../redis/redis_def.zig");
+pub const redis = @import("../redis.zig");
 
 pub const CommandHandlerFn = *const fn (ctx: *Context) anyerror!void;
 
 pub const CommandError = redis.RedisReaderErr || redis.RedisWriterErr;
 
 pub const Context = struct {
-    _redis_reader: *RedisReader,
-    redis_writer: *RedisWriter,
+    _redis_reader: *redis.RedisReader,
+    redis_writer: *redis.RedisWriter,
     client: Client.Rc,
     command_arguments: usize = 0,
     read_command_arguments: usize = 0,
-    command: redis.Command,
+    command: []const u8,
     store: *Store,
     allocator: Allocator,
     conn_address: std.net.Address,
@@ -34,33 +31,18 @@ pub const Context = struct {
     pub fn initUndefined(
         allocator: Allocator,
         client: Client.Rc,
-        redis_reader: *RedisReader,
-        redis_writer: *RedisWriter,
+        redis_reader: *redis.RedisReader,
+        redis_writer: *redis.RedisWriter,
         store: *Store,
         conn_address: std.net.Address,
     ) Self {
-        return .{ .conn_address = conn_address, .allocator = allocator, .client = client, .redis_writer = redis_writer, ._redis_reader = redis_reader, .store = store, .command = undefined };
+        return .{ .conn_address = conn_address, .allocator = allocator, .client = client, .redis_writer = redis_writer, ._redis_reader = redis_reader, .store = store, .command = &.{} };
     }
 
-    pub fn prepare(self: *Self, command: redis.Command, arguments_count: usize) void {
+    pub fn prepare(self: *Self, command: []const u8, arguments_count: usize) void {
         self.command = command;
         self.read_command_arguments = 0;
         self.command_arguments = arguments_count;
-    }
-
-    pub const ReadCommandHeaderError = RedisReader.Error || error{EmptyCommandHeader};
-
-    pub fn readCommandHeader(self: *Self) ReadCommandHeaderError!struct { command: redis.Command, arguments_count: usize } {
-        const arguments_count = try self._redis_reader.readArrayHeader();
-        if (arguments_count <= 0) {
-            return ReadCommandHeaderError.EmptyCommandHeader;
-        }
-
-        const command = try self._redis_reader.readCommand();
-
-        self.prepare(command, @intCast(arguments_count - 1));
-
-        return .{ .command = command, .arguments_count = @intCast(arguments_count - 1) };
     }
 
     pub fn deinit(self: *Self) void {
@@ -108,6 +90,23 @@ pub const Context = struct {
         return v;
     }
 
+    pub const CommandHeader = struct {
+        command: []const u8,
+        arguments_count: u8,
+        pub fn deinit(self: @This(), allocator: Allocator) void {
+            allocator.free(self.command);
+        }
+    };
+
+    pub fn readCommandHeader(self: *Self) !CommandHeader {
+        const arr_size = try self._redis_reader.readArrayHeader();
+        if (arr_size == 0) return error.InvalidCommandHeader;
+        const command = try self._redis_reader.readString();
+        if (command == null) return error.InvalidCommandHeader;
+        self.read_command_arguments = 0;
+        return .{ .command = command.?, .arguments_count = @intCast(arr_size - 1) };
+    }
+
     pub fn readI64(self: *Self) !i64 {
         std.debug.assert(self.command_arguments > self.read_command_arguments);
         const v = try self._redis_reader.readI64();
@@ -119,7 +118,7 @@ pub const Context = struct {
         var bb = buf_util.BinaryBuilder.init(self.allocator, 60);
         defer bb.deinit();
         try bb.push("wrong number of arguments for '");
-        try bb.push(@tagName(self.command));
+        try bb.push(self.command);
         try bb.push("' command");
         const err = try bb.collect();
         defer self.allocator.free(err);
@@ -133,5 +132,42 @@ pub const Context = struct {
         }
 
         try self._redis_reader.discardNValues(self.command_arguments - self.read_command_arguments);
+        self.read_command_arguments = self.command_arguments;
     }
 };
+
+pub const CommandDecl = struct {
+    name: []const u8,
+    arity: comptime_int = 1,
+    flags: CommandFlag = .{},
+    handler: CommandHandlerFn,
+    pos_first_key: comptime_int = 0,
+    pos_last_key: comptime_int = 0,
+    step_count_keys: comptime_int = 0,
+
+    const Self = @This();
+
+    pub inline fn is(self: *const Self, name: []const u8) bool {
+        if (name.len != self.name.len) return false;
+
+        var lower: [self.name.len]u8 = undefined;
+        inline for (0..self.name.len) |i| {
+            lower[i] = std.ascii.toLower(name[i]);
+        }
+
+        return std.mem.eql(u8, lower[0..], self.name);
+    }
+};
+
+pub const CommandDeclInfo = struct { name: []const u8 };
+
+pub fn CommandHandler(comptime command_decl: CommandDecl) type {
+    return struct {
+        pub const decl = command_decl;
+        pub const handle = decl.handler;
+
+        const Self = @This();
+    };
+}
+
+pub const CommandFlag = packed struct(u16) { write: bool = false, readonly: bool = false, denyoom: bool = false, admin: bool = false, pubsub: bool = false, noscript: bool = false, random: bool = false, sort_for_script: bool = false, loading: bool = false, stale: bool = false, skip_monitor: bool = false, asking: bool = false, fast: bool = false, movablekeys: bool = false, _padding: u2 = 0 };

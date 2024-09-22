@@ -125,9 +125,12 @@ const Segment = struct {
         const entry_ptr = try self.allocator.create(Entry);
         errdefer self.allocator.destroy(entry_ptr);
         entry_ptr.* = try Entry.initAsCopy(self.allocator, value);
+        const key_copy = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(key_copy);
+
         self.mutex.lock();
-        self.lookup_table.put(key, entry_ptr) catch unreachable; // OutOfMemory
-        self.mutex.unlock();
+        defer self.mutex.unlock();
+        try self.lookup_table.put(key_copy, entry_ptr); // OutOfMemory
     }
 
     pub fn del(self: *Self, key: []const u8) void {

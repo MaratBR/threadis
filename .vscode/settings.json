@@ -1,0 +1,4 @@
+{
+    "zig.zls.path": "${workspaceFolder}/zls",
+    "zig.path": "zig"
+}

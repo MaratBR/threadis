@@ -6,7 +6,7 @@ const coro = @import("coro");
 const socket_util = @import("./socket/util.zig");
 const ConnectionPipe = @import("./socket/server.zig").ConnectionPipe;
 
-const redis_proto = @import("./redis/redis_protocol.zig");
+const redis = @import("./redis.zig");
 
 const handlers = @import("./handlers/all_handlers.zig");
 
@@ -96,8 +96,8 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
     defer conn_reader.deinit();
     var conn_writer = try conn_data.conn.writer();
     defer conn_writer.deinit();
-    var r = redis_proto.RedisReader.init(allocator, conn_reader.any());
-    var w = redis_proto.RedisWriter.init(allocator, conn_writer.any());
+    var r = redis.RedisReader.init(allocator, conn_reader.any());
+    var w = redis.RedisWriter.init(allocator, conn_writer.any());
 
     var command_ctx = handlers.Context.initUndefined(allocator, conn_data.client.retain(), &r, &w, conn_data.store, conn_data.conn.addr);
     defer command_ctx.deinit();
@@ -130,15 +130,16 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
                 break;
             }
 
-            log_handleConnection.err("error encountered while processing command from {}", .{conn_data.conn.addr});
+            log_handleConnection.err("error encountered while processing command from {}: {}", .{ conn_data.conn.addr, err });
             return err;
         };
     }
 
+    if (received_quit) {
+        log_handleConnection.debug("received quit command from peer {}", .{conn_data.conn.addr});
+    }
+
     if (!closed) {
-        if (received_quit) {
-            log_handleConnection.debug("received quit command from peer {}", .{conn_data.conn.addr});
-        }
         conn_data.conn.close() catch |err| {
             std.debug.panic("failed to close connection with peer {}: {}", .{ conn_data.conn.addr, err });
         };
@@ -151,21 +152,28 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
 fn handleCommand(ctx: *handlers.Context) !void {
     const log_handleCommand = std.log.scoped(.handler_handleCommand);
 
-    const command_header = ctx.readCommandHeader() catch |err| {
-        if (err == error.EmptyCommandHeader) {
-            return;
-        }
-
-        return err;
-    };
-
+    const command_header = try ctx.readCommandHeader();
+    defer command_header.deinit(ctx.allocator);
     const handler = handlers.getCommandHandler(command_header.command);
+    ctx.prepare(command_header.command, command_header.arguments_count);
 
-    log_handleCommand.debug("executing handler for {s} command with {} arguments", .{ @tagName(command_header.command), command_header.arguments_count });
+    log_handleCommand.debug("executing handler for {s} command with {} arguments", .{ command_header.command, command_header.arguments_count });
+    const started_at = now();
     try handler(ctx);
-    log_handleCommand.debug("finished executing handler for {s} command", .{@tagName(command_header.command)});
+    const elapsed = now().since(started_at);
+    if (elapsed > std.time.ns_per_ms * 10) {
+        log_handleCommand.debug("finished executing handler for {s} command in {}ms", .{ command_header.command, elapsed / std.time.ns_per_ms });
+    }
 
     if (ctx.read_command_arguments != ctx.command_arguments) {
-        log_handleCommand.err("command handler for {s} did not read all arguments from the client stream but finished successfully, read_command_arguments={}, command_arguments={}", .{ @tagName(command_header.command), ctx.read_command_arguments, ctx.command_arguments });
+        log_handleCommand.err("command handler for {s} did not read all arguments from the client stream but finished successfully, read_command_arguments={}, command_arguments={}", .{ command_header.command, ctx.read_command_arguments, ctx.command_arguments });
+        try ctx.discardRemainingArguments();
     }
+}
+
+fn now() std.time.Instant {
+    const instant = std.time.Instant.now() catch |err| {
+        std.debug.panic("failed to get Instant: {}", .{err});
+    };
+    return instant;
 }

@@ -1,0 +1,1 @@
+watch -n 0.3 'pmap -x $(cat ./pid.txt) | tail -n 1'

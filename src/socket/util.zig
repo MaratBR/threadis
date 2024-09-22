@@ -178,3 +178,7 @@ pub fn close(sockfd: posix.socket_t) void {
         std.log.err("failed to close socket: {}", .{err});
     };
 }
+
+pub fn delay(ms: usize) !void {
+    try coro.io.single(aio.Timeout{ .ns = ms * std.time.ns_per_ms });
+}

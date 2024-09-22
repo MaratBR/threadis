@@ -23,7 +23,7 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .aio = .{ .url = "https://github.com/Cloudef/zig-aio/archive/630207a1c4dede36ee842e4f51ca914b49d1c0b0.zip", .hash = "1220aa5f9c93650ed9f4933f92787f473713c48d6b7e3aeda2d462805e351c416525" },
+        .aio = .{ .url = "https://github.com/Cloudef/zig-aio/archive/24e2fb4d3a5c548957486e18e369915421ae8c4d.zip", .hash = "1220aa5f9c93650ed9f4933f92787f473713c48d6b7e3aeda2d462805e351c416525" },
         // .coro = .{ .url = "https://github.com/rsepassi/zigcoro/archive/fc1db29dee049ce572a516f1586cce0eca4fcb2a.zip", .hash = "1220d92d294edf8d4575f010696728473a5333f4bf243f4e7b73d7eb7b9503adbfa6" },
         // .coro_win = .{ .url = "https://github.com/rsepassi/zigcoro/archive/fc1db29dee049ce572a516f1586cce0eca4fcb2a.zip", .hash = "1220d92d294edf8d4575f010696728473a5333f4bf243f4e7b73d7eb7b9503adbfa6" },
     },
