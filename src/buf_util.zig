@@ -25,9 +25,10 @@ pub const BinaryBuilder = struct {
             self.size = 0;
             return buf;
         } else {
+            std.debug.assert(self.buf.len >= self.size);
             const allocator = self.allocator;
             const buf = try allocator.alloc(u8, self.size);
-            std.mem.copyForwards(u8, buf, self.buf);
+            std.mem.copyForwards(u8, buf, self.buf[0..self.size]);
             return buf;
         }
     }
@@ -79,14 +80,11 @@ pub const BinaryBuilder = struct {
         var new_buf_size = self.buf.len * 2;
 
         while (new_buf_size < required_space) {
-            new_buf_size += self.buf_size;
+            new_buf_size *= 2;
         }
 
         const allocator = self.allocator;
-        const new_buf = try allocator.alloc(u8, new_buf_size);
-        std.mem.copyForwards(u8, new_buf, self.buf);
-        allocator.free(self.buf);
-        self.buf = new_buf;
+        self.buf = try allocator.realloc(self.buf, new_buf_size);
     }
 
     pub fn deinit(self: *Self) void {

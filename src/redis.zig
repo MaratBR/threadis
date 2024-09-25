@@ -35,9 +35,9 @@ pub const Value = struct { typ: DataType, val: union {
 
 const STACK_BUF_SIZE = 4096;
 
-pub const RedisReaderErr = Allocator.Error || error{ ReadError, RecursionDepth, UnexpectedChar, InvalidCRLF, IntegerTooBig, BufferTooBig, InvalidTypePrefix, InvalidDigit, InvalidEnum, InvalidStringType, BufferDidNotReadEnough };
+pub const RedisReaderErr = Allocator.Error || error{ ReadError, RecursionDepth, UnexpectedChar, InvalidCRLF, IntegerTooBig, InvalidInteger, BufferTooBig, InvalidTypePrefix, InvalidDigit, InvalidEnum, InvalidStringType, BufferDidNotReadEnough };
 
-pub const LastReaderErrorInfo = struct { read_error: ?anyerror };
+pub const LastReaderErrorInfo = struct { read_error: ?anyerror = null, parse_error: ?anyerror = null };
 
 pub const RedisReader = struct {
     pub const Error = RedisReaderErr;
@@ -62,7 +62,7 @@ pub const RedisReader = struct {
 
             .allocator = allocator,
 
-            .last_error = .{ .read_error = null },
+            .last_error = .{},
         };
     }
 
@@ -198,6 +198,34 @@ pub const RedisReader = struct {
         }
 
         return try self.internalReadI64();
+    }
+
+    pub fn readI64String(self: *Self) RedisReaderErr!i64 {
+        const prefix = try self.readTypePrefix();
+        if (prefix == .Int) {
+            return try self.internalReadI64();
+        } else if (prefix == .SimpleString) {
+            const s = try self.internalReadSimpleString();
+            defer self.allocator.free(s);
+            const i = std.fmt.parseInt(i64, s, 10) catch |err| {
+                self.last_error.parse_error = err;
+                return error.InvalidInteger;
+            };
+            return i;
+        } else if (prefix == .String) {
+            const s = try self.internalReadBulkString();
+            if (s == null) {
+                return error.InvalidInteger;
+            }
+            defer self.allocator.free(s.?);
+            const i = std.fmt.parseInt(i64, s.?, 10) catch |err| {
+                self.last_error.parse_error = err;
+                return error.InvalidInteger;
+            };
+            return i;
+        } else {
+            return RedisReaderErr.InvalidTypePrefix;
+        }
     }
 
     fn internalReadI64(self: *Self) RedisReaderErr!i64 {

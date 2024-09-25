@@ -37,9 +37,19 @@ fn handle(ctx: *Context) !void {
             ctx.store.del(key.buf);
         } else {
             const value = maybe_value.?;
-            defer value.deinit();
-            const entry_value = Store.Value.initBinary(value.buf);
-            try borrowed_entry.entry.set(&entry_value);
+
+            const maybe_i64_value = std.fmt.parseInt(i64, value.buf, 10) catch null;
+
+            if (maybe_i64_value != null) {
+                value.deinit();
+                const i64_value = maybe_i64_value.?;
+                const entry_value = Store.Value.initI64(i64_value);
+                try borrowed_entry.entry.set(&entry_value);
+            } else {
+                const entry_value = Store.Value.initBinary(value.buf);
+                try borrowed_entry.entry.set(&entry_value);
+                value.deinit();
+            }
         }
     }
 

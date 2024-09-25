@@ -47,6 +47,15 @@ pub const command_handler = common.Commands(.{
     // quit handler
     .quit = @import("quit.zig").quit,
 
+    // incr handler
+    .incr = @import("incr_decr.zig").incr,
+    // decr handler
+    .decr = @import("incr_decr.zig").decr,
+    // quiincrbyt handler
+    .incrby = @import("incr_decr.zig").incrby,
+    // decrby handler
+    .decrby = @import("incr_decr.zig").decrby,
+
     // command handler
     .command = common.CommandHandler(.{ .name = "command", .decl = .{ .handler = sendListOfCommands } }),
 });

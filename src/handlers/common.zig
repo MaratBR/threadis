@@ -109,7 +109,7 @@ pub const Context = struct {
 
     pub fn readI64(self: *Self) !i64 {
         std.debug.assert(self.command_arguments > self.read_command_arguments);
-        const v = try self._redis_reader.readI64();
+        const v = try self._redis_reader.readI64String();
         self.read_command_arguments += 1;
         return v;
     }
