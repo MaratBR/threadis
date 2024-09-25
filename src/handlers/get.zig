@@ -25,4 +25,4 @@ fn handle(ctx: *Context) !void {
     }
 }
 
-pub const get = common.CommandHandler(.{ .name = "get", .arity = 2, .handler = handle });
+pub const get = common.CommandHandler(.{ .name = "get", .decl = .{ .arity = 2, .handler = handle } });

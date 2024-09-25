@@ -41,4 +41,4 @@ fn handle(ctx: *Context) !void {
     }
 }
 
-pub const append = common.CommandHandler(.{ .name = "append", .flags = .{ .write = true }, .arity = 2, .handler = handle });
+pub const append = common.CommandHandler(.{ .name = "append", .decl = .{ .flags = .{ .write = true }, .arity = 2, .handler = handle } });

@@ -137,13 +137,17 @@ pub const Context = struct {
 };
 
 pub const CommandDecl = struct {
-    name: []const u8,
     arity: comptime_int = 1,
     flags: CommandFlag = .{},
     handler: CommandHandlerFn,
     pos_first_key: comptime_int = 0,
     pos_last_key: comptime_int = 0,
     step_count_keys: comptime_int = 0,
+};
+
+pub const CommandInfo = struct {
+    decl: CommandDecl,
+    name: []const u8,
 
     const Self = @This();
 
@@ -159,15 +163,94 @@ pub const CommandDecl = struct {
     }
 };
 
-pub const CommandDeclInfo = struct { name: []const u8 };
-
-pub fn CommandHandler(comptime command_decl: CommandDecl) type {
+pub fn CommandHandler(comptime command_decl: CommandInfo) type {
     return struct {
-        pub const decl = command_decl;
-        pub const handle = decl.handler;
+        const decl = command_decl.decl;
+        pub const name = command_decl.name;
 
-        const Self = @This();
+        pub fn handle(ctx: *Context) !void {
+            return @This().decl.handler(ctx);
+        }
     };
 }
 
 pub const CommandFlag = packed struct(u16) { write: bool = false, readonly: bool = false, denyoom: bool = false, admin: bool = false, pubsub: bool = false, noscript: bool = false, random: bool = false, sort_for_script: bool = false, loading: bool = false, stale: bool = false, skip_monitor: bool = false, asking: bool = false, fast: bool = false, movablekeys: bool = false, _padding: u2 = 0 };
+
+fn CreateCommandsHandler(comptime n: comptime_int, comptime subcommands: [n]type) type {
+    const CTMap = @import("ctmap.zig").CTMap;
+    var keys: [n][]const u8 = undefined;
+    var values: [n]CommandHandlerFn = undefined;
+
+    for (0..n) |i| {
+        keys[i] = subcommands[i].name;
+        values[i] = subcommands[i].handle;
+    }
+
+    const Map = CTMap(n, keys, CommandHandlerFn, values);
+
+    return struct {
+        pub fn handle(ctx: *Context) !void {
+            const handle_fn = Map.get(ctx.command) orelse {
+                try ctx.redis_writer.writeError("unknown subcommand");
+                return;
+            };
+
+            try handle_fn(ctx);
+        }
+    };
+}
+
+pub fn Commands(comptime command: anytype) type {
+    const command_type = @TypeOf(command);
+    const type_info = @typeInfo(command_type);
+
+    return switch (type_info) {
+        .Struct => {
+            const struct_info = type_info.Struct;
+            if (struct_info.is_tuple) {
+                @compileError("struct must not be a tuple");
+            }
+
+            if (struct_info.fields.len == 0) {
+                @compileError("struct must not be empty");
+            }
+
+            var subcommands: [struct_info.fields.len]type = undefined;
+
+            for (0..struct_info.fields.len) |i| {
+                const field = struct_info.fields[i];
+                const field_value = @field(command, field.name);
+
+                if (@TypeOf(field_value) != type) {
+                    @compileError("each field of the Commands struct must be a type");
+                }
+
+                if (!isHandlerType(field_value)) {
+                    @compileError("each field of the Commands struct must be a handler");
+                }
+
+                subcommands[i] = field_value;
+            }
+
+            return CreateCommandsHandler(subcommands.len, subcommands);
+        },
+        else => {
+            @compileError("Commands handler accepts struct of any type as an argument");
+        },
+    };
+}
+
+fn isHandlerType(comptime t: type) bool {
+    return switch (@typeInfo(t)) {
+        .Struct => {
+            if (!std.meta.hasFn(t, "handle")) {
+                return false;
+            }
+
+            // TODO more complex checks
+            return true;
+        },
+
+        else => false,
+    };
+}

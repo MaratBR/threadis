@@ -6,4 +6,4 @@ fn handle(_: *Context) !void {
     return error.Quit;
 }
 
-pub const quit = common.CommandHandler(.{ .name = "quit", .handler = handle });
+pub const quit = common.CommandHandler(.{ .name = "quit", .decl = .{ .handler = handle } });

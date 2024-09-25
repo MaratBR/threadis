@@ -12,54 +12,55 @@ fn commandNoop(ctx: *Context) !void {
 
 fn sendListOfCommands(ctx: *Context) !void {
     try ctx.discardRemainingArguments();
+    try ctx.redis_writer.writeArrayHeader(0);
 
-    try ctx.redis_writer.writeArrayHeader(@intCast(command_handlers.len));
-
-    inline for (command_handlers) |h| {
-        const decl: common.CommandDecl = h.decl;
-
-        try ctx.redis_writer.writeArrayHeader(6);
-        try ctx.redis_writer.writeComptimeSimpleString(decl.name);
-        try ctx.redis_writer.writeI64(decl.arity);
-        try ctx.redis_writer.writeEmptyArray();
-        try ctx.redis_writer.writeI64(decl.pos_first_key);
-        try ctx.redis_writer.writeI64(decl.pos_last_key);
-        try ctx.redis_writer.writeI64(decl.step_count_keys);
-    }
+    // inline for (command_handlers) |h| {
+    //     inline for (h.inner) |_decl| {
+    //         const decl: common.CommandDecl = _decl;
+    //         try ctx.redis_writer.writeArrayHeader(6);
+    //         try ctx.redis_writer.writeComptimeSimpleString(decl.name);
+    //         try ctx.redis_writer.writeI64(decl.arity);
+    //         try ctx.redis_writer.writeEmptyArray();
+    //         try ctx.redis_writer.writeI64(decl.pos_first_key);
+    //         try ctx.redis_writer.writeI64(decl.pos_last_key);
+    //         try ctx.redis_writer.writeI64(decl.step_count_keys);
+    //     }
+    // }
 }
 
-pub const command_command = common.CommandHandler(.{ .name = "command", .handler = sendListOfCommands });
+pub const command_handler = common.Commands(.{
+    // append handler
+    .append = @import("append.zig").append,
 
-pub const command_handlers = .{
-    // append command
-    @import("append.zig").append,
+    // client handler
+    .client = @import("client.zig").client,
 
-    // client command
-    @import("client.zig").client,
+    // get handler
+    .get = @import("get.zig").get,
 
-    // get command
-    @import("get.zig").get,
+    // set handler
+    .set = @import("set.zig").set,
 
-    // set command
-    @import("set.zig").set,
+    // ping handler
+    .ping = @import("ping.zig").ping,
 
-    // ping command
-    @import("ping.zig").ping,
+    // quit handler
+    .quit = @import("quit.zig").quit,
 
-    // quit command
-    @import("quit.zig").quit,
+    // command handler
+    .command = common.CommandHandler(.{ .name = "command", .decl = .{ .handler = sendListOfCommands } }),
+});
 
-    // command command
-    command_command,
-};
-
-pub fn getCommandHandler(command: []const u8) CommandHandlerFn {
+pub fn getCommandHandler(_: []const u8) CommandHandlerFn {
     // pretty inefficient, fix it in the future
-    inline for (command_handlers) |h| {
-        if (h.decl.is(command)) {
-            return h.decl.handler;
-        }
-    }
+    // inline for (command_handlers) |cmd_decl| {
+    //     inline for (cmd_decl.inner) |_cmd_decl2| {
+    //         const decl: common.CommandDecl = _cmd_decl2;
+    //         if (decl.is(command)) {
+    //             return decl.handler;
+    //         }
+    //     }
+    // }
 
-    return commandNoop;
+    return command_handler.handle;
 }

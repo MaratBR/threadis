@@ -46,4 +46,4 @@ fn handle(ctx: *Context) !void {
     try ctx.redis_writer.writeOK();
 }
 
-pub const set = common.CommandHandler(.{ .name = "set", .arity = 3, .handler = handle });
+pub const set = common.CommandHandler(.{ .name = "set", .decl = .{ .arity = 3, .handler = handle } });

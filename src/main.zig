@@ -24,6 +24,11 @@ pub const std_options: std.Options = .{
 
 const log = std.log.scoped(.main);
 
+const MyType = struct {
+    pub const integer = 12312;
+    field: u8,
+};
+
 pub fn main() !void {
     const pid = getPID();
     log.info("current process PID: {}", .{pid});

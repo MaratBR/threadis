@@ -10,8 +10,7 @@ pub const BinaryBuilder = struct {
     const Self = @This();
 
     pub fn init(allocator: Allocator, buf_size: usize) Self {
-        std.debug.assert(buf_size > 1024);
-
+        std.debug.assert(buf_size > 0);
         return .{ .allocator = allocator, .buf = &.{}, .buf_size = buf_size, .size = 0 };
     }
 

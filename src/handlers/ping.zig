@@ -7,4 +7,4 @@ fn handle(ctx: *Context) !void {
     try ctx.redis_writer.writeComptimeSimpleString("PONG");
 }
 
-pub const ping = common.CommandHandler(.{ .name = "ping", .handler = handle });
+pub const ping = common.CommandHandler(.{ .name = "ping", .decl = .{ .handler = handle } });
