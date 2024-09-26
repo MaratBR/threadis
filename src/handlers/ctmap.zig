@@ -1,5 +1,40 @@
 const std = @import("std");
 
+pub fn MkCTMap(comptime value: anytype) type {
+    const type_info = @typeInfo(@TypeOf(value));
+    return switch (type_info) {
+        .Struct => {
+            const struct_info = type_info.Struct;
+            const n = struct_info.fields.len;
+
+            if (n < 1) {
+                @compileError("MkCTMap expects struct to have at least one field");
+            }
+
+            const value_type: type = struct_info.fields[0].type;
+
+            for (1..n) |i| {
+                if (value_type != struct_info.fields[i].type) {
+                    @compileError("MkCTMap expects all fields to be the same type");
+                }
+            }
+
+            var values: [n]value_type = undefined;
+            var keys: [n][]const u8 = undefined;
+
+            for (0..n) |i| {
+                keys[i] = struct_info.fields[i].name;
+                values[i] = @field(value, struct_info.fields[i].name);
+            }
+
+            return CTMap(n, keys, value_type, values);
+        },
+        else => {
+            @compileError("MkCTMap expects type argument to be a struct");
+        },
+    };
+}
+
 pub fn CTMap(comptime n: comptime_int, comptime keys: [n][]const u8, comptime T: type, comptime values: [n]T) type {
     return CTMapHash(n, keys, T, values, std.hash.Wyhash);
 }
@@ -60,6 +95,8 @@ fn CTMapHash(comptime n: comptime_int, comptime keys: [n][]const u8, comptime T:
     };
 
     return struct {
+        pub const ValueType = T;
+
         pub fn get(key: []const u8) ?T {
             const hash = hash_type.hash(0, key);
             if (hash < min_hash) return null;

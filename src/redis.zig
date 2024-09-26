@@ -518,6 +518,12 @@ pub const RedisWriter = struct {
         return self.write(&buf);
     }
 
+    pub inline fn writeSimpleString(self: *Self, str: []const u8) RedisWriterErr!void {
+        try self.writeByte(SIMPLE_STRING_PREFIX);
+        try self.write(str);
+        try self.internalWriteCRLF();
+    }
+
     pub inline fn writeOK(self: *Self) RedisWriterErr!void {
         return self.writeComptimeSimpleString("OK");
     }

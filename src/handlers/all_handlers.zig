@@ -56,6 +56,9 @@ pub const command_handler = common.Commands(.{
     // decrby handler
     .decrby = @import("incr_decr.zig").decrby,
 
+    .deeznuts = @import("deez_nuts.zig").deeznuts,
+    .sus = @import("sus.zig").sus,
+
     // command handler
     .command = common.CommandHandler(.{ .name = "command", .decl = .{ .handler = sendListOfCommands } }),
 });

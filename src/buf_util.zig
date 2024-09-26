@@ -1,6 +1,25 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+pub const StaticBinaryBuilder = struct {
+    buf: []u8,
+    cursor: usize = 0,
+
+    const Self = @This();
+
+    pub fn init(buf: []u8) Self {
+        return .{ .buf = buf };
+    }
+
+    pub fn push(self: *Self, bytes: []const u8) !void {
+        if (self.cursor + bytes.len > self.buf.len) {
+            return error.OutOfSpace;
+        }
+        std.mem.copyForwards(u8, self.buf[self.cursor..], bytes);
+        self.cursor += bytes.len;
+    }
+};
+
 pub const BinaryBuilder = struct {
     allocator: Allocator,
     buf: []u8,

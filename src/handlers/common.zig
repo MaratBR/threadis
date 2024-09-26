@@ -8,6 +8,7 @@ const Store = @import("../store/store.zig").Store;
 
 const String = @import("../util/string.zig");
 const buf_util = @import("../buf_util.zig");
+const ctmap = @import("ctmap.zig");
 
 pub const redis = @import("../redis.zig");
 
@@ -76,6 +77,10 @@ pub const Context = struct {
         return true;
     }
 
+    pub fn beginSubcommand(self: *Self) !void {
+        self.command_arguments -= self.read_command_arguments;
+    }
+
     pub fn readString(self: *Self) !?String {
         std.debug.assert(self.command_arguments > self.read_command_arguments);
         const v = try self._redis_reader.readString();
@@ -101,10 +106,12 @@ pub const Context = struct {
     pub fn readCommandHeader(self: *Self) !CommandHeader {
         const arr_size = try self._redis_reader.readArrayHeader();
         if (arr_size == 0) return error.InvalidCommandHeader;
-        const command = try self._redis_reader.readString();
-        if (command == null) return error.InvalidCommandHeader;
+        const maybe_command = try self._redis_reader.readString();
+        if (maybe_command == null) return error.InvalidCommandHeader;
+        const command = maybe_command.?;
+        _ = std.ascii.lowerString(command, command);
         self.read_command_arguments = 0;
-        return .{ .command = command.?, .arguments_count = @intCast(arr_size - 1) };
+        return .{ .command = command, .arguments_count = @intCast(arr_size - 1) };
     }
 
     pub fn readI64(self: *Self) !i64 {
@@ -176,22 +183,29 @@ pub fn CommandHandler(comptime command_decl: CommandInfo) type {
 
 pub const CommandFlag = packed struct(u16) { write: bool = false, readonly: bool = false, denyoom: bool = false, admin: bool = false, pubsub: bool = false, noscript: bool = false, random: bool = false, sort_for_script: bool = false, loading: bool = false, stale: bool = false, skip_monitor: bool = false, asking: bool = false, fast: bool = false, movablekeys: bool = false, _padding: u2 = 0 };
 
+fn comptimeToLower(comptime str: []const u8) []const u8 {
+    var lower: [str.len]u8 = undefined;
+    inline for (0..str.len) |i| {
+        lower[i] = std.ascii.toLower(str[i]);
+    }
+    return &lower;
+}
+
 fn CreateCommandsHandler(comptime n: comptime_int, comptime subcommands: [n]type) type {
-    const CTMap = @import("ctmap.zig").CTMap;
     var keys: [n][]const u8 = undefined;
     var values: [n]CommandHandlerFn = undefined;
 
     for (0..n) |i| {
-        keys[i] = subcommands[i].name;
+        keys[i] = comptimeToLower(subcommands[i].name);
         values[i] = subcommands[i].handle;
     }
 
-    const Map = CTMap(n, keys, CommandHandlerFn, values);
+    const Map = ctmap.CTMap(n, keys, CommandHandlerFn, values);
 
     return struct {
         pub fn handle(ctx: *Context) !void {
             const handle_fn = Map.get(ctx.command) orelse {
-                try ctx.redis_writer.writeError("unknown subcommand");
+                try ctx.redis_writer.writeError("unknown command");
                 return;
             };
 
@@ -253,4 +267,38 @@ fn isHandlerType(comptime t: type) bool {
 
         else => false,
     };
+}
+
+pub fn MkEnumReader(comptime map: anytype) type {
+    const Map = ctmap.MkCTMap(map);
+    return struct {
+        pub inline fn read(ctx: *Context) anyerror!?Map.ValueType {
+            const maybe_str = try ctx.readString();
+            if (maybe_str == null) return null;
+            const str = maybe_str.?;
+            defer str.deinit();
+            _ = std.ascii.lowerString(str.buf, str.buf);
+            return Map.get(str.buf);
+        }
+    };
+}
+
+pub fn readCTEnum(comptime Map: type, ctx: *Context) anyerror!?Map.ValueType {
+    const maybe_str = try ctx.readString();
+    if (maybe_str == null) return null;
+    const str = maybe_str.?;
+    defer str.deinit();
+    _ = std.ascii.lowerString(str.buf, str.buf);
+    const value: ?Map.ValueType = Map.get(str.buf);
+    return value;
+}
+
+pub fn readSubcommandHandler(ctx: *Context, comptime map: anytype) !?CommandHandlerFn {
+    const Map = ctmap.MkCTMap(map);
+    if (Map.ValueType != CommandHandlerFn) {
+        @compileError("Map.ValueType must be CommandHandlerFn");
+    }
+
+    const maybe_value = try readCTEnum(Map, ctx);
+    return maybe_value;
 }

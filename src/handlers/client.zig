@@ -1,53 +1,47 @@
 const std = @import("std");
 const common = @import("./common.zig");
+const ctmap = @import("ctmap.zig");
 
 const Context = common.Context;
 
 fn handle(ctx: *Context) !void {
-    const log = std.log.scoped(.client);
-
     if (!try ctx.minArgNum(1)) return;
 
-    const maybe_sub_command = ctx.readEnum(enum { id, setname, getname, kill, list, pause, reply, unblock }) catch |e| {
-        if (e == error.InvalidEnum) {
-            log.info("invalid subcommand received", .{});
-            return error.InvalidSubcommand;
-        } else {
-            return e;
-        }
-        return;
-    };
+    const sub_command_handler: ?common.CommandHandlerFn = try common.readSubcommandHandler(ctx, .{ .id = &id, .setname = &setname });
 
-    if (maybe_sub_command == null) {
+    if (sub_command_handler == null) {
         try ctx.discardRemainingArguments();
         try ctx.redis_writer.writeError("invalid sub-command for command 'client'");
         return;
     }
 
-    const sub_command = maybe_sub_command.?;
+    try sub_command_handler.?(ctx);
+}
 
-    switch (sub_command) {
-        .id => {
-            if (!try ctx.exactArgNum(1)) return;
-            try ctx.redis_writer.writeI64(ctx.client.c().id);
-            log.info("CLIENT ID to {}", .{ctx.conn_address});
-        },
+fn id(ctx: *Context) anyerror!void {
+    if (!try ctx.exactArgNum(1)) return;
+    try ctx.redis_writer.writeI64(ctx.client.c().id);
+}
 
-        .setname => {
-            if (!try ctx.exactArgNum(2)) return;
-            const maybe_name = try ctx.readString();
-            if (maybe_name) |name| {
-                defer name.deinit();
-                try ctx.client.c().setName(name.buf);
-            } else {
-                ctx.client.c().removeName();
-            }
-        },
+fn setname(ctx: *Context) anyerror!void {
+    if (!try ctx.exactArgNum(1)) return;
+    const maybe_name = try ctx.readString();
+    if (maybe_name) |name| {
+        defer name.deinit();
+        try ctx.client.c().setName(name.buf);
+    } else {
+        ctx.client.c().removeName();
+    }
+}
 
-        else => {
-            try ctx.discardRemainingArguments();
-            return;
-        },
+fn getname(ctx: *Context) anyerror!void {
+    if (!try ctx.exactArgNum(2)) return;
+    const maybe_name = try ctx.readString();
+    if (maybe_name) |name| {
+        defer name.deinit();
+        try ctx.client.c().setName(name.buf);
+    } else {
+        ctx.client.c().removeName();
     }
 }
 
