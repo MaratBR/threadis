@@ -1,9 +1,12 @@
 const std = @import("std");
 
 const UnmanagedEntryValue = @import("./value.zig");
+const glob = @import("../util/glob.zig");
 
 const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
+
+const log = std.log.scoped(.in_memory_store);
 
 pub const Entry = struct {
     value: UnmanagedEntryValue,
@@ -78,39 +81,118 @@ pub const Entry = struct {
     };
 };
 
+pub const KeyIterFunction = *const fn (key: []const u8) anyerror!void;
+
 const Segment = struct {
     // max size of this segment in bytes
     max_size: usize,
-
     // lookup table containing all values store in the segment
     lookup_table: StringHashMap(*Entry),
-
     // mutex for accesing the values stored
     mutex: std.Thread.RwLock,
-
     count: usize,
-
     allocator: Allocator,
+    id: u16,
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator) Self {
+    pub fn init(allocator: Allocator, id: u16) Self {
         return .{
 
             // max size of this segment in bytes (WIP)
             .max_size = 100,
-
             .allocator = allocator,
-
             // mutex for reads and writes to the segment
             .mutex = .{},
-
             // in memory hash map
             .lookup_table = StringHashMap(*Entry).init(allocator),
-
             // atomic counter
             .count = 0,
+            .id = id,
         };
+    }
+
+    pub const ScanIterator = struct {
+        segment: *Segment,
+        key_iterator: StringHashMap(*Entry).KeyIterator,
+
+        // how many keys are left to be read
+        remaining: usize,
+
+        // number of values read
+        read: usize = 0,
+
+        // cursor or in simpler terms - offset in the lookup table
+        cursor: u32,
+        next_cursor: u32 = 0,
+        initialized: u1 = 0,
+        skip_dirty: u1,
+        pattern: []const u8,
+
+        pub fn init(cursor: u32, remaining: usize, segment: *Segment, skip_dirty: bool, pattern: []const u8) @This() {
+            return .{ .key_iterator = segment.lookup_table.keyIterator(), .segment = segment, .cursor = cursor, .remaining = remaining, .skip_dirty = if (skip_dirty) 1 else 0, .pattern = pattern };
+        }
+
+        pub fn next(self: *ScanIterator) ?[]const u8 {
+            if (self.remaining == 0) {
+                return null;
+            }
+
+            if (self.initialized == 0) {
+                self.initialized = 1;
+                self.segment.lock();
+                if (self.skip_dirty == 1) {
+                    if (self.key_iterator.len < self.cursor) {
+                        // cursor is more than ther size of the lookup table
+                        self.remaining = 0;
+                        self.next_cursor = 0;
+                        return null;
+                    } else {
+                        self.key_iterator.len -= self.cursor;
+                        self.key_iterator.items += self.cursor;
+                    }
+                } else {
+                    for (0..self.cursor) |_| {
+                        if (self.key_iterator.next() == null) {
+                            self.remaining = 0;
+                            return null;
+                        }
+                    }
+                }
+            }
+
+            const key_ptr = self.key_iterator.next();
+
+            if (key_ptr == null) {
+                self.remaining = 0;
+                return null;
+            } else {
+                self.read += 1;
+                self.remaining -= 1;
+                return key_ptr.?.*;
+            }
+        }
+
+        pub fn deinit(self: *@This()) void {
+            if (self.initialized == 1) {
+                self.segment.unlock();
+            }
+        }
+    };
+
+    pub fn scan(self: *Self, cursor: u32, count: usize, pattern: []const u8) Self.ScanIterator {
+        const it = Self.ScanIterator.init(cursor, count, self, true, pattern);
+        return it;
+    }
+
+    pub fn lock(self: *Self) void {
+        self.mutex.lock();
+        // log.debug("segment #{} locked", .{self.id});
+    }
+
+    pub fn unlock(self: *Self) void {
+        self.mutex.unlock();
+        // log.debug("segment #{} unlocked", .{self.id});
     }
 
     pub fn get(self: *Self, key: []const u8) ?Entry.Borrowed {
@@ -169,7 +251,7 @@ const Segment = struct {
 };
 
 pub const InMemoryStoreConfig = struct {
-    segments_count: usize,
+    segments_count: u8,
 };
 
 pub const InMemoryStore = struct {
@@ -187,7 +269,7 @@ pub const InMemoryStore = struct {
 
         const segments = try allocator.alloc(Segment, segment_count);
         for (0..segment_count) |i| {
-            segments[i] = Segment.init(allocator);
+            segments[i] = Segment.init(allocator, @intCast(i));
         }
 
         return .{ .segments = segments, .allocator = allocator, .segment_mask = segment_count - 1 };
@@ -210,6 +292,74 @@ pub const InMemoryStore = struct {
         return &self.segments[self.segment_mask & hash];
     }
 
+    pub const ScanIterator = struct {
+        store: *Self,
+        remaining: usize,
+        read: usize = 0,
+        segment_idx: u16,
+        pattern: []const u8,
+        segment_cursor: u32,
+        seg_iterator: ?Segment.ScanIterator = null,
+
+        pub fn init(store: *Self, c: i64, count: usize, pattern: []const u8) @This() {
+            const cursor_cast = @as(u48, @intCast(c));
+            const segment_idx = @as(u16, @intCast((cursor_cast >> 32) & 0xffff));
+            const segment_cursor: u32 = @intCast(cursor_cast & ~@as(u48, 0xffff << 32));
+
+            return .{ .store = store, .segment_idx = segment_idx, .segment_cursor = segment_cursor, .remaining = count, .pattern = pattern };
+        }
+
+        pub fn cursor(self: *const @This()) i64 {
+            if (self.seg_iterator) |seg_iterator| {
+                const v: u48 = @as(u48, @intCast(self.segment_idx)) << 32 | seg_iterator.cursor;
+                return @intCast(v);
+            } else {
+                return 0;
+            }
+        }
+
+        pub fn nextSegment(self: *@This()) ?*Segment.ScanIterator {
+            if (self.remaining == 0) {
+                return null;
+            }
+
+            if (self.seg_iterator != null) {
+                var seg_iterator = &self.seg_iterator.?;
+                std.debug.assert(seg_iterator.remaining == 0);
+                std.debug.assert(self.remaining >= seg_iterator.read);
+                self.read += seg_iterator.read;
+                self.remaining -= seg_iterator.read;
+                self.segment_cursor = 0;
+                seg_iterator.deinit();
+                self.seg_iterator = null;
+            }
+
+            if (self.segment_idx >= self.store.segments.len) {
+                // reached the end of the store
+                self.remaining = 0;
+                return null;
+            }
+
+            const segment = &self.store.segments[self.segment_idx];
+            self.seg_iterator = segment.scan(self.segment_cursor, self.remaining, self.pattern);
+            std.debug.assert(self.segment_idx != std.math.maxInt(@TypeOf(self.segment_idx)));
+            self.segment_idx += 1;
+
+            return &self.seg_iterator.?;
+        }
+
+        pub fn deinit(self: *@This()) void {
+            if (self.seg_iterator != null) {
+                self.seg_iterator.?.deinit();
+                self.seg_iterator = null;
+            }
+        }
+    };
+
+    pub fn scan(self: *Self, cursor: i64, count: usize, pattern: []const u8) Self.ScanIterator {
+        return Self.ScanIterator.init(self, cursor, count, pattern);
+    }
+
     pub fn deinit(self: *Self) void {
         const allocator = self.allocator;
         for (self.segments) |*segment| {
@@ -218,3 +368,19 @@ pub const InMemoryStore = struct {
         allocator.free(self.segments);
     }
 };
+
+// const Cursor = packed struct {
+//     segment_idx: u16,
+//     segment_cursor: u32,
+
+//     pub fn init(v: u48) Cursor {
+//         return .{
+//             .segment_idx = @truncate(v >> 32),
+//             .segment_cursor = @truncate(v),
+//         };
+//     }
+
+//     pub fn fromI64(v: i64) Cursor {
+//         return Cursor.init(@intCast(v));
+//     }
+// };

@@ -28,6 +28,8 @@ fn sendListOfCommands(ctx: *Context) !void {
     // }
 }
 
+const debug_commands = @import("debug.zig");
+
 pub const command_handler = common.Commands(.{
     // append handler
     .append = @import("append.zig").append,
@@ -35,8 +37,9 @@ pub const command_handler = common.Commands(.{
     // client handler
     .client = @import("client.zig").client,
 
-    // get handler
+    // reading handlers
     .get = @import("get.zig").get,
+    .scan = @import("scan.zig").scan,
 
     // set handler
     .set = @import("set.zig").set,
@@ -56,8 +59,12 @@ pub const command_handler = common.Commands(.{
     // decrby handler
     .decrby = @import("incr_decr.zig").decrby,
 
+    // silly commands
     .deeznuts = @import("deez_nuts.zig").deeznuts,
     .sus = @import("sus.zig").sus,
+
+    // debug commands
+    .debug_populate = debug_commands.debug_populate,
 
     // command handler
     .command = common.CommandHandler(.{ .name = "command", .decl = .{ .handler = sendListOfCommands } }),

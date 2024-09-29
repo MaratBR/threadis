@@ -82,10 +82,18 @@ pub const Context = struct {
     }
 
     pub fn readString(self: *Self) !?String {
+        return String.initOwnedNullable(try self.readStringBuf(), self._redis_reader.allocator);
+    }
+
+    pub fn readerAllocator(self: *const Self) Allocator {
+        return self._redis_reader.allocator;
+    }
+
+    pub fn readStringBuf(self: *Self) !?[]u8 {
         std.debug.assert(self.command_arguments > self.read_command_arguments);
         const v = try self._redis_reader.readString();
         self.read_command_arguments += 1;
-        return String.initOwnedNullable(v, self._redis_reader.allocator);
+        return v;
     }
 
     pub fn readEnum(self: *Self, comptime T: type) !?T {
@@ -119,6 +127,18 @@ pub const Context = struct {
         const v = try self._redis_reader.readI64String();
         self.read_command_arguments += 1;
         return v;
+    }
+
+    pub fn readParameters(
+        self: *Self,
+        comptime pos_t: type,
+        comptime f_t: type,
+    ) redis.RedisReaderErr!redis.Parameters(pos_t, f_t) {
+        const max_arguments = self.command_arguments - self.read_command_arguments;
+        const params = try self._redis_reader.parameters(max_arguments, pos_t, f_t);
+        std.debug.assert(params.arguments_read <= max_arguments);
+        self.read_command_arguments += params.arguments_read;
+        return params;
     }
 
     fn writeArgNumErr(self: *Self) !void {
@@ -301,4 +321,51 @@ pub fn readSubcommandHandler(ctx: *Context, comptime map: anytype) !?CommandHand
 
     const maybe_value = try readCTEnum(Map, ctx);
     return maybe_value;
+}
+
+pub fn PositionArgs(comptime inner_type: type) type {
+    const type_info = @typeInfo(inner_type);
+    if (type_info != .Struct) {
+        @compileError("inner_type must be a struct");
+    }
+    const struct_info = type_info.Struct;
+    var is_optional: bool = false;
+
+    for (struct_info.fields) |field| {
+        var t = field.type;
+
+        if (@typeInfo(t) == .Optional) {
+            is_optional = true;
+        } else if (is_optional) {
+            @compileError("optional argument cannot follow non-optional one");
+        }
+
+        if (is_optional) {
+            const tinfo = @typeInfo(t);
+            t = tinfo.Optional.child;
+        }
+
+        if (t != []const u8 and t != i64) {
+            @compileError("each field of positional must be []const u8 or i64");
+        }
+    }
+
+    return struct {
+        value: inner_type,
+        allocator: Allocator,
+
+        pub fn init(allocator: Allocator, value: inner_type) @This() {
+            return .{ .value = value, .allocator = allocator };
+        }
+
+        pub fn deinit(self: @This()) void {
+            inline for (struct_info.fields) |field| {
+                switch (field.type) {
+                    inline []const u8 => {
+                        self.allocator.free(@field(self.value, field.name));
+                    },
+                }
+            }
+        }
+    };
 }

@@ -77,12 +77,16 @@ fn CTMapHash(comptime n: comptime_int, comptime keys: [n][]const u8, comptime T:
             if (!hasDuplicates(usize, &arr_indices)) {
                 break;
             } else {
-                eas *= 2;
+                eas += 1;
             }
         }
 
         break :blk eas;
     };
+
+    if (eas > 1024) {
+        @compileError("CTMap is too big");
+    }
 
     const arr: [eas]T = blk: {
         var arr_v: [eas]T = undefined;
@@ -112,6 +116,7 @@ fn CTMapHash(comptime n: comptime_int, comptime keys: [n][]const u8, comptime T:
 fn hasDuplicates(comptime T: type, arr: []T) bool {
     for (0..arr.len) |i| {
         const v = arr[i];
+        @setEvalBranchQuota(10000);
         for (i + 1..arr.len) |j| {
             const v2 = arr[j];
             if (v2 == v) {

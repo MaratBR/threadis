@@ -16,38 +16,56 @@ pub const LF = '\n';
 pub const CR = '\r';
 pub const CRLF = "\r\n";
 
-pub const DataType = enum {
-    SimpleString,
-    String,
-    Error,
-    Int,
-    Array,
+pub const TypePrefixEnum = enum(u8) {
+    simple_string = SIMPLE_STRING_PREFIX,
+    string = STRING_PREFIX,
+    array = ARRAY_PREFIX,
+    err = ERROR_PREFIX,
+    int = INT_PREFIX,
 };
 
-pub const ValueType = enum {
-    String,
-    Int,
+pub const ReadableValueType = enum {
+    string,
+    int,
+    array_header,
 };
 
-pub const Value = struct { typ: DataType, val: union {
-    string: []u8,
-} };
+pub const ReadableValue = union(ReadableValueType) {
+    string: ?[]const u8,
+    int: i64,
+    array_header: i64,
+};
 
 const STACK_BUF_SIZE = 4096;
 
-pub const RedisReaderErr = Allocator.Error || error{ ReadError, RecursionDepth, UnexpectedChar, InvalidCRLF, IntegerTooBig, InvalidInteger, BufferTooBig, InvalidTypePrefix, InvalidDigit, InvalidEnum, InvalidStringType, BufferDidNotReadEnough };
+pub const RedisReaderErr = Allocator.Error || error{
+    ReadError,
+    RecursionDepth,
+    UnexpectedChar,
+    InvalidCRLF,
+    IntegerTooBig,
+    InvalidInteger,
+    BufferTooBig,
+    InvalidTypePrefix,
+    InvalidDigit,
+    InvalidEnum,
+    InvalidStringType,
+    BufferDidNotReadEnough,
+    NotEnoughArguments,
+};
 
-pub const LastReaderErrorInfo = struct { read_error: ?anyerror = null, parse_error: ?anyerror = null };
+pub const LastReaderErrorInfo = struct {
+    read_error: ?anyerror = null,
+    parse_error: ?anyerror = null,
+};
 
 pub const RedisReader = struct {
     pub const Error = RedisReaderErr;
+    const log = std.log.scoped(.RedisReader);
 
     reader: AnyReader,
-
     peek: u8,
-
     allocator: Allocator,
-
     last_error: LastReaderErrorInfo,
 
     const Self = @This();
@@ -79,7 +97,7 @@ pub const RedisReader = struct {
         return b;
     }
 
-    inline fn read(self: *Self, buf: []u8) RedisReaderErr!usize {
+    fn read(self: *Self, buf: []u8) RedisReaderErr!usize {
         const read_bytes = self.reader.read(buf) catch |err| {
             self.last_error.read_error = err;
             return RedisReaderErr.ReadError;
@@ -116,7 +134,7 @@ pub const RedisReader = struct {
         return arr;
     }
 
-    inline fn discard(self: *Self, n: usize) RedisReaderErr!void {
+    fn discard(self: *Self, n: usize) RedisReaderErr!void {
         var trash: [STACK_BUF_SIZE]u8 = undefined;
         var remaining = n;
 
@@ -133,7 +151,7 @@ pub const RedisReader = struct {
         }
     }
 
-    inline fn readCRLF(self: *Self) RedisReaderErr!void {
+    fn readCRLF(self: *Self) RedisReaderErr!void {
         var crlf: [2]u8 = undefined;
         _ = try self.read(&crlf);
         if (crlf[0] == CR and crlf[1] == LF) {
@@ -147,7 +165,7 @@ pub const RedisReader = struct {
         _ = self.readCRLF();
     }
 
-    inline fn discardUntilCLRF(self: *Self) RedisReaderErr!void {
+    fn discardUntilCLRF(self: *Self) RedisReaderErr!void {
         while (true) {
             const b = self.reader.readByte() catch |err| {
                 self.last_error.read_error = err;
@@ -162,58 +180,87 @@ pub const RedisReader = struct {
         return;
     }
 
-    inline fn peekTypePrefix(self: *Self) RedisReaderErr!DataType {
+    inline fn peekTypePrefix(self: *Self) RedisReaderErr!TypePrefixEnum {
         const b = self.peekByte();
 
         const typ = switch (b) {
-            SIMPLE_STRING_PREFIX => DataType.SimpleString,
-            STRING_PREFIX => DataType.String,
-            ARRAY_PREFIX => DataType.Array,
-            INT_PREFIX => DataType.Int,
-            ERROR_PREFIX => DataType.Error,
-            else => RedisReaderErr.InvalidTypePrefix,
+            SIMPLE_STRING_PREFIX => TypePrefixEnum.simple_string,
+            STRING_PREFIX => TypePrefixEnum.string,
+            ARRAY_PREFIX => TypePrefixEnum.array,
+            INT_PREFIX => TypePrefixEnum.int,
+            ERROR_PREFIX => TypePrefixEnum.err,
+            else => {
+                Self.log.debug("invalid type prefix: {c}", .{b});
+                return RedisReaderErr.InvalidTypePrefix;
+            },
         };
 
         return typ;
     }
 
-    pub fn readTypePrefix(self: *Self) RedisReaderErr!DataType {
+    pub fn readTypePrefix(self: *Self) RedisReaderErr!TypePrefixEnum {
         _ = try self.readByte();
         const typ = try self.peekTypePrefix();
         return typ;
     }
 
-    inline fn peekDigit(self: *Self) RedisReaderErr!u8 {
-        const b = self.peekByte();
-        if (b >= '0' and b <= '9') {
-            return b - '0';
-        }
-        return RedisReaderErr.InvalidDigit;
+    pub fn readValue(self: *Self) RedisReaderErr!ReadableValue {
+        const typ = try self.readTypePrefix();
+        return switch (typ) {
+            .simple_string => {
+                const str = try self.readSimpleStringAssumePrefix();
+                if (str.len > 0) {
+                    const int = std.fmt.parseInt(i64, str, 10) catch {
+                        return .{ .string = str };
+                    };
+                    return .{ .int = int };
+                } else {
+                    return .{ .string = str };
+                }
+            },
+            .string => {
+                const maybe_str = try self.readBulkStringAssumePrefix();
+                if (maybe_str) |str| {
+                    const int = std.fmt.parseInt(i64, str, 10) catch {
+                        return .{ .string = str };
+                    };
+                    return .{ .int = int };
+                } else {
+                    return .{ .string = null };
+                }
+            },
+            .array => ReadableValue{ .array_header = try self.readArrayHeaderAssumePrefix() },
+            .int => ReadableValue{ .int = try self.readI64AssumePrefix() },
+            else => RedisReaderErr.InvalidTypePrefix,
+        };
     }
 
+    // reads i64 value
     pub fn readI64(self: *Self) RedisReaderErr!i64 {
         const prefix = try self.readTypePrefix();
-        if (prefix != .Int) {
+        if (prefix != .int) {
             return RedisReaderErr.InvalidTypePrefix;
         }
 
-        return try self.internalReadI64();
+        return try self.readI64AssumePrefix();
     }
 
+    // reads an integer or a string representation of an integer,
+    // if string is not a valid i64, will return an error
     pub fn readI64String(self: *Self) RedisReaderErr!i64 {
         const prefix = try self.readTypePrefix();
-        if (prefix == .Int) {
-            return try self.internalReadI64();
-        } else if (prefix == .SimpleString) {
-            const s = try self.internalReadSimpleString();
+        if (prefix == .int) {
+            return try self.readI64AssumePrefix();
+        } else if (prefix == .simple_string) {
+            const s = try self.readSimpleStringAssumePrefix();
             defer self.allocator.free(s);
             const i = std.fmt.parseInt(i64, s, 10) catch |err| {
                 self.last_error.parse_error = err;
                 return error.InvalidInteger;
             };
             return i;
-        } else if (prefix == .String) {
-            const s = try self.internalReadBulkString();
+        } else if (prefix == .string) {
+            const s = try self.readBulkStringAssumePrefix();
             if (s == null) {
                 return error.InvalidInteger;
             }
@@ -228,7 +275,7 @@ pub const RedisReader = struct {
         }
     }
 
-    fn internalReadI64(self: *Self) RedisReaderErr!i64 {
+    fn readI64AssumePrefix(self: *Self) RedisReaderErr!i64 {
         var v: i64 = 0;
         var is_negative = false;
 
@@ -270,6 +317,14 @@ pub const RedisReader = struct {
         return v;
     }
 
+    inline fn peekDigit(self: *Self) RedisReaderErr!u8 {
+        const b = self.peekByte();
+        if (b >= '0' and b <= '9') {
+            return b - '0';
+        }
+        return RedisReaderErr.InvalidDigit;
+    }
+
     pub fn readEnum(self: *Self, comptime T: type) RedisReaderErr!T {
         // const command_max_length = comptime getCommandMaxLength();
         const str = try self.readString();
@@ -290,17 +345,17 @@ pub const RedisReader = struct {
     pub fn readString(self: *Self) RedisReaderErr!?[]u8 {
         const typ = try self.readTypePrefix();
 
-        if (typ == .SimpleString) {
-            return try self.internalReadSimpleString();
-        } else if (typ == .String) {
-            return self.internalReadBulkString();
+        if (typ == .simple_string) {
+            return try self.readSimpleStringAssumePrefix();
+        } else if (typ == .string) {
+            return self.readBulkStringAssumePrefix();
         } else {
             return RedisReaderErr.InvalidStringType;
         }
     }
 
-    fn internalReadBulkString(self: *Self) RedisReaderErr!?[]u8 {
-        const len = try self.internalReadI64();
+    fn readBulkStringAssumePrefix(self: *Self) RedisReaderErr!?[]u8 {
+        const len = try self.readI64AssumePrefix();
         if (len < 0) {
             return null; // null string
         } else if (len == 0) {
@@ -321,68 +376,81 @@ pub const RedisReader = struct {
         }
     }
 
-    fn internalReadSimpleString(self: *Self) RedisReaderErr![]u8 {
+    fn readSimpleStringAssumePrefix(self: *Self) RedisReaderErr![]u8 {
         const b = try self.readUntilCLRF(1024, 1024);
         return b;
     }
 
     pub fn readArrayHeader(self: *Self) RedisReaderErr!i64 {
         const prefix = try self.readTypePrefix();
-        if (prefix != .Array) {
+        if (prefix != .array) {
             return RedisReaderErr.InvalidTypePrefix;
         }
 
-        var len = try self.internalReadI64();
+        return try self.readArrayHeaderAssumePrefix();
+    }
+
+    fn readArrayHeaderAssumePrefix(self: *Self) RedisReaderErr!i64 {
+        var len = try self.readI64AssumePrefix();
         if (len < -1) len = -1;
 
         return len;
     }
 
-    pub fn discardAnyValue(self: *Self) RedisReaderErr!DataType {
-        return self.discardAnyValueWithRecursionDepth(0);
-    }
-
     pub inline fn discardNValues(self: *Self, n: usize) RedisReaderErr!void {
         for (0..n) |_| {
-            _ = try self.discardAnyValue();
+            _ = try self.discardValue();
         }
     }
 
-    fn discardAnyValueWithRecursionDepth(self: *Self, recursion_depth: u8) RedisReaderErr!DataType {
-        if (recursion_depth == 4) {
+    pub fn discardValue(self: *Self) RedisReaderErr!TypePrefixEnum {
+        return self.discardWithRecursionDepth(4);
+    }
+
+    fn discardWithRecursionDepth(self: *Self, recursion_depth: u8) RedisReaderErr!TypePrefixEnum {
+        if (recursion_depth == 0) {
             return RedisReaderErr.RecursionDepth;
         }
 
         const typ = try self.readTypePrefix();
 
         switch (typ) {
-            DataType.SimpleString => {
+            TypePrefixEnum.simple_string => {
                 try self.discardUntilCLRF();
             },
-            DataType.String => {
-                const len = try self.internalReadI64();
+            TypePrefixEnum.string => {
+                const len = try self.readI64AssumePrefix();
                 if (len > 0) {
                     try self.discard(@intCast(len));
                 }
                 try self.discard(2);
             },
-            DataType.Int => {
+            TypePrefixEnum.int => {
                 try self.discardUntilCLRF();
             },
-            DataType.Error => {
+            TypePrefixEnum.err => {
                 try self.discardUntilCLRF();
             },
-            DataType.Array => {
+            TypePrefixEnum.array => {
                 const arr_len = try self.readArrayHeader();
                 if (arr_len > 0) {
                     for (0..@intCast(arr_len)) |_| {
-                        _ = try self.discardAnyValueWithRecursionDepth(recursion_depth + 1);
+                        _ = try self.discardWithRecursionDepth(recursion_depth - 1);
                     }
                 }
             },
         }
 
         return typ;
+    }
+
+    pub fn parameters(
+        self: *Self,
+        max_arguments: usize,
+        comptime pos_t: type,
+        comptime f_t: type,
+    ) RedisReaderErr!Parameters(pos_t, f_t) {
+        return readParameters(self, max_arguments, pos_t, f_t);
     }
 };
 
@@ -425,21 +493,21 @@ pub const RedisWriter = struct {
     }
 
     pub inline fn writeI64(self: *Self, v: i64) RedisWriterErr!void {
-        return self.writeInteger(i64, v);
+        return self.writeInteger(v);
     }
 
     pub inline fn writeUsize(self: *Self, v: usize) RedisWriterErr!void {
-        return self.writeInteger(usize, v);
+        return self.writeInteger(v);
     }
 
-    inline fn writeInteger(self: *Self, comptime TInt: type, v: TInt) RedisWriterErr!void {
+    inline fn writeInteger(self: *Self, v: anytype) RedisWriterErr!void {
         try self.writeByte(INT_PREFIX);
-        try self.internalWriteInteger(TInt, v);
+        try self.internalWriteInteger(v);
         try self.internalWriteCRLF();
     }
 
-    inline fn internalWriteInteger(self: *Self, comptime TInt: type, v: TInt) RedisWriterErr!void {
-        const max_len = (comptime maxIntStringSize(TInt)) + 1;
+    inline fn internalWriteInteger(self: *Self, v: anytype) RedisWriterErr!void {
+        const max_len = (comptime maxIntStringSize(if (@TypeOf(v) == comptime_int) v else @TypeOf(v))) + 1;
         var buf: [max_len]u8 = undefined;
         const numAsString = std.fmt.bufPrint(&buf, "{}", .{v}) catch {
             std.debug.panic("std.fmt.bufPrint failed", .{});
@@ -448,25 +516,13 @@ pub const RedisWriter = struct {
         return self.write(buf[0..numAsString.len]);
     }
 
-    // fn internalWriteI64(self: *Self, v: i64) RedisWriterErr!void {
-    //     return self.internalWriteInteger(i64, v);
-    //     // const max_len = 20;
-    //     // var buf: [max_len]u8 = undefined;
-    //     // buf[0] = ':';
-    //     // const numAsString = std.fmt.bufPrint(&buf, "{}", .{v}) catch {
-    //     //     std.debug.panic("std.fmt.bufPrint failed", .{});
-    //     // };
-
-    //     // return self.write(buf[0..numAsString.len]);
-    // }
-
     pub inline fn writeEmptyArray(self: *Self) RedisWriterErr!void {
         try self.writeArrayHeader(0);
     }
 
-    pub fn writeArrayHeader(self: *Self, v: i64) RedisWriterErr!void {
+    pub fn writeArrayHeader(self: *Self, v: anytype) RedisWriterErr!void {
         try self.writeByte(ARRAY_PREFIX);
-        try self.internalWriteInteger(i64, v);
+        try self.internalWriteInteger(v);
         try self.internalWriteCRLF();
     }
 
@@ -494,7 +550,7 @@ pub const RedisWriter = struct {
             self.last_error.write_error = err;
             return RedisWriterErr.WriteError;
         };
-        try self.internalWriteInteger(usize, v.len);
+        try self.internalWriteInteger(v.len);
         try self.internalWriteCRLF();
 
         if (v.len > 0) {
@@ -551,8 +607,23 @@ fn getSimpleStringBuf(comptime str: []const u8) [str.len + 3]u8 {
     return buf;
 }
 
-fn maxIntStringSize(comptime TInt: type) comptime_int {
+fn maxIntStringSize(comptime TInt: anytype) comptime_int {
     var len: usize = 0;
+
+    if (@TypeOf(TInt) == comptime_int) {
+        var v = TInt;
+        if (v < 0) {
+            len += 1;
+            v = -v;
+        }
+        while (v != 0) {
+            len += 1;
+            v /= 10;
+        }
+        return len;
+    } else if (@TypeOf(TInt) != type) {
+        @compileError("maxIntStringSize expects type argument to be a comptime_int or a type of integer (u64, i32 etc), got: " ++ @typeName(TInt));
+    }
 
     const type_info = @typeInfo(TInt);
 
@@ -563,11 +634,11 @@ fn maxIntStringSize(comptime TInt: type) comptime_int {
             }
         },
         else => {
-            @compileError("maxIntStringSize expects type argument to be an integer of some kind");
+            @compileError("maxIntStringSize expects type argument to be an integer of some kind, got: " ++ @typeName(TInt));
         },
     }
 
-    var v: usize = std.math.maxInt(TInt);
+    var v = std.math.maxInt(TInt);
 
     while (v != 0) {
         len += 1;
@@ -575,4 +646,229 @@ fn maxIntStringSize(comptime TInt: type) comptime_int {
     }
 
     return len;
+}
+
+pub fn Parameters(
+    comptime pos_t: type,
+    comptime f_t: type,
+) type {
+    return struct {
+        positional_args: pos_t,
+        flags: f_t,
+        allocator: Allocator,
+        arguments_read: usize,
+
+        pub fn init(
+            allocator: Allocator,
+            positional_args: pos_t,
+            flags: f_t,
+            arguments_read: usize,
+        ) @This() {
+            return .{ .flags = flags, .positional_args = positional_args, .allocator = allocator, .arguments_read = arguments_read };
+        }
+    };
+}
+
+pub fn readParameters(
+    r: *RedisReader,
+    max_arguments: usize,
+    comptime pos_t: type,
+    comptime f_t: type,
+) RedisReaderErr!Parameters(pos_t, f_t) {
+    const pos_ti = @typeInfo(pos_t);
+    const f_ti = @typeInfo(f_t);
+
+    if (f_ti != .Struct) {
+        @compileError("f_t must be a struct");
+    }
+    if (pos_ti != .Struct) {
+        @compileError("pos_t must be a struct");
+    }
+
+    const pos_tis = pos_ti.Struct;
+    const f_tis = f_ti.Struct;
+
+    // validate flags type
+    if (f_tis.is_tuple) {
+        @compileError("pos_t cannot be a tuple struct");
+    }
+    inline for (f_tis.fields) |field| {
+        const ti = @typeInfo(field.type);
+        if (ti != .Optional) {
+            @compileError("all flags must be optional");
+        }
+        const t = ti.Optional.child;
+        if (t != i64 and t != []const u8 and t != bool) {
+            @compileError("all flags must be i64 or []const u8");
+        }
+    }
+
+    // validate positional args
+    comptime var optional = false;
+    comptime var required_args: usize = 0;
+    inline for (pos_tis.fields) |field| {
+        comptime var t = field.type;
+        comptime var ti = @typeInfo(t);
+
+        if (ti == .Optional) {
+            optional = true;
+            t = ti.Optional.child;
+            ti = @typeInfo(t);
+        } else {
+            if (optional) {
+                @compileError("required positional argument cannot follow non-optional one");
+            }
+            required_args += 1;
+        }
+
+        if (t != i64 and t != []const u8) {
+            @compileError("each field of positional must be []const u8 or i64");
+        }
+    }
+
+    var pos: pos_t = comptime getDefaultValue(pos_t);
+    var flags: f_t = comptime getDefaultValue(f_t);
+    var flag_name: ?[]const u8 = null;
+    var read: usize = 0;
+
+    inline for (0..pos_tis.fields.len) |i| {
+        const field = pos_tis.fields[i];
+
+        if (read == max_arguments) {
+            if (i < required_args) {
+                return error.NotEnoughArguments;
+            } else {
+                break;
+            }
+        }
+
+        read += 1;
+
+        if (i < required_args) {
+            if (field.type == []const u8) {
+                @field(pos, field.name) = try r.readString();
+            } else if (field.type == i64) {
+                @field(pos, field.name) = try r.readI64String();
+            } else {
+                unreachable;
+            }
+        } else {
+            if (field.type == []const u8) {
+                const maybe_str = try r.readString();
+                if (maybe_str) |str| {
+                    if (isFlag(f_t, str)) {
+                        // start reading flags instead
+                        flag_name = str;
+                    } else {
+                        // just a string
+                        @field(pos, field.name) = str;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                const value = try r.readValue();
+
+                if (value == .int) {
+                    @field(pos, field.name) = value.int;
+                } else if (value == .string) {
+                    const maybe_str = value.string;
+                    if (maybe_str) |str| {
+                        if (isFlag(f_t, str)) {
+                            // start reading flags instead
+                            flag_name = str;
+                            break;
+                        } else {
+                            // just a string which is not valid in this case
+                            return error.InvalidTypePrefix;
+                        }
+                    }
+                } else if (value == .array_header) {
+                    return error.InvalidTypePrefix;
+                } else {
+                    unreachable;
+                }
+            }
+        }
+    }
+
+    var remaining_flags: usize = f_tis.fields.len;
+
+    outer: while (remaining_flags > 0) {
+        if (flag_name == null) {
+            if (read == max_arguments) {
+                break :outer;
+            }
+
+            flag_name = try r.readString();
+            if (flag_name == null) {
+                break;
+            }
+        }
+
+        const f = flag_name.?;
+
+        inline for (f_tis.fields) |field| {
+            if (std.ascii.eqlIgnoreCase(field.name, f)) {
+                remaining_flags -= 1;
+                if (field.type == i64) {
+                    if (read == max_arguments) {
+                        return error.NotEnoughArguments;
+                    }
+                    @field(flags, field.name) = try r.readI64();
+                    read += 1;
+                } else if (field.type == []const u8) {
+                    if (read == max_arguments) {
+                        return error.NotEnoughArguments;
+                    }
+                    @field(flags, field.name) = try r.readI64String();
+                    read += 1;
+                } else if (field.type == bool) {
+                    @field(flags, field.name) = true;
+                } else {
+                    unreachable;
+                }
+                break;
+            }
+        }
+    }
+
+    return Parameters(pos_t, f_t).init(r.allocator, pos, flags, read);
+}
+
+fn getDefaultValue(comptime T: type) T {
+    const type_info = @typeInfo(T);
+
+    return switch (type_info) {
+        .Int => 0,
+        .Null => null,
+        .Float => 0.0,
+        .ComptimeInt => 0,
+        .Bool => false,
+        .Optional => null,
+        .Struct => {
+            var v: T = undefined;
+            for (type_info.Struct.fields) |field| {
+                if (field.default_value != null) {
+                    @field(v, field.name) = field.default_value.?;
+                } else {
+                    @field(v, field.name) = getDefaultValue(field.type);
+                }
+            }
+            return v;
+        },
+        else => {
+            @compileError("cannot calculate default value for type" ++ @typeName(T));
+        },
+    };
+}
+
+fn isFlag(comptime T: type, name: []const u8) bool {
+    inline for (@typeInfo(T).Struct.fields) |field| {
+        if (std.ascii.eqlIgnoreCase(field.name, name)) {
+            return true;
+        }
+    }
+
+    return false;
 }
