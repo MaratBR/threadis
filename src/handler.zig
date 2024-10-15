@@ -120,7 +120,7 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
             } else if (err == error.WriteError) {
                 std.debug.assert(w.last_error.write_error != null);
                 const write_error = w.last_error.write_error.?;
-                if (write_error == error.ConnectionResetByPeer) {
+                if (write_error == error.ConnectionResetByPeer or write_error == error.BrokenPipe) {
                     closed = true;
                     break;
                 }
@@ -131,7 +131,7 @@ fn handleConnection(allocator: std.mem.Allocator, conn_data: ConnectionData) !vo
             }
 
             log_handleConnection.err("error encountered while processing command from {}: {}", .{ conn_data.conn.addr, err });
-            return err;
+            break;
         };
     }
 
@@ -176,4 +176,8 @@ fn now() std.time.Instant {
         std.debug.panic("failed to get Instant: {}", .{err});
     };
     return instant;
+}
+
+fn isUserError(err: anyerror) bool {
+    return err == error.IntegerTooBig or err == error.NotEnoughArguments or err == error.InvalidEnum;
 }

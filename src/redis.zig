@@ -20,7 +20,6 @@ pub const TypePrefixEnum = enum(u8) {
     simple_string = SIMPLE_STRING_PREFIX,
     string = STRING_PREFIX,
     array = ARRAY_PREFIX,
-    err = ERROR_PREFIX,
     int = INT_PREFIX,
 };
 
@@ -39,24 +38,33 @@ pub const ReadableValue = union(ReadableValueType) {
 const STACK_BUF_SIZE = 4096;
 
 pub const RedisReaderErr = Allocator.Error || error{
+    // IO error during read operation
+    //
     ReadError,
-    RecursionDepth,
-    UnexpectedChar,
-    InvalidCRLF,
-    IntegerTooBig,
-    InvalidInteger,
-    BufferTooBig,
-    InvalidTypePrefix,
-    InvalidDigit,
-    InvalidEnum,
-    InvalidStringType,
-    BufferDidNotReadEnough,
-    NotEnoughArguments,
+
+    // Invalid protocol format
+    //
+    ProtocolError,
+
+    // Protocol format is correct but passed value is not processable,
+    // for example string integer that is over the int64 limit or a
+    // string that way too big
+    //
+    InvalidValue,
+
+    // Various interal errors
+    //
+    RecursionLimitExceeded,
+
+    // Parameters errors
+    //
+    InvalidParameters,
 };
 
 pub const LastReaderErrorInfo = struct {
     read_error: ?anyerror = null,
-    parse_error: ?anyerror = null,
+    msg: ?*const [:0]u8 = null,
+    source: ?*const [:0]u8 = null,
 };
 
 pub const RedisReader = struct {
@@ -114,7 +122,10 @@ pub const RedisReader = struct {
 
         while (true) {
             if (buf_builder.size >= limit) {
-                return RedisReaderErr.BufferTooBig;
+                try self.discardUntilCLRF();
+                self.last_error.msg = "reached max size of the buffer for storing the value";
+                self.last_error.source = "readUntilCLRF";
+                return RedisReaderErr.InvalidValue;
             }
 
             const b = try self.readByte();
@@ -123,7 +134,9 @@ pub const RedisReader = struct {
                 if (b2 == LF) {
                     return buf_builder.collect();
                 } else {
-                    return RedisReaderErr.InvalidCRLF;
+                    self.last_error.msg = "expected LF after CR, but got something else instead";
+                    self.last_error.source = "readUntilCLRF";
+                    return RedisReaderErr.ProtocolError;
                 }
             } else {
                 try buf_builder.pushByte(b);
@@ -157,7 +170,9 @@ pub const RedisReader = struct {
         if (crlf[0] == CR and crlf[1] == LF) {
             return;
         } else {
-            return RedisReaderErr.InvalidCRLF;
+            self.last_error.msg = "expected LF after CR, but got something else instead";
+            self.last_error.source = "readUntilCLRF";
+            return RedisReaderErr.ProtocolError;
         }
     }
 
@@ -175,7 +190,9 @@ pub const RedisReader = struct {
         }
         const last_byte = try self.readByte();
         if (last_byte != LF) {
-            return RedisReaderErr.InvalidCRLF;
+            self.last_error.msg = "expected LF after CR, but got something else instead";
+            self.last_error.source = "discardUntilCLRF";
+            return RedisReaderErr.ProtocolError;
         }
         return;
     }
@@ -188,10 +205,17 @@ pub const RedisReader = struct {
             STRING_PREFIX => TypePrefixEnum.string,
             ARRAY_PREFIX => TypePrefixEnum.array,
             INT_PREFIX => TypePrefixEnum.int,
-            ERROR_PREFIX => TypePrefixEnum.err,
+            ERROR_PREFIX => {
+                Self.log.debug("received error as input", .{});
+                self.last_error.msg = "invalid type prefix: error cannot be unsed as an input type";
+                self.last_error.source = "peekTypePrefix";
+                return RedisReaderErr.ProtocolError;
+            },
             else => {
                 Self.log.debug("invalid type prefix: {c}", .{b});
-                return RedisReaderErr.InvalidTypePrefix;
+                self.last_error.msg = "invalid type prefix";
+                self.last_error.source = "peekTypePrefix";
+                return RedisReaderErr.ProtocolError;
             },
         };
 
@@ -231,7 +255,6 @@ pub const RedisReader = struct {
             },
             .array => ReadableValue{ .array_header = try self.readArrayHeaderAssumePrefix() },
             .int => ReadableValue{ .int = try self.readI64AssumePrefix() },
-            else => RedisReaderErr.InvalidTypePrefix,
         };
     }
 
@@ -239,7 +262,10 @@ pub const RedisReader = struct {
     pub fn readI64(self: *Self) RedisReaderErr!i64 {
         const prefix = try self.readTypePrefix();
         if (prefix != .int) {
-            return RedisReaderErr.InvalidTypePrefix;
+            try self.discardTypeWithRecursionDepth(prefix, 4);
+            self.last_error.msg = "expected int, but got something else instead";
+            self.last_error.source = "readI64";
+            return RedisReaderErr.InvalidValue;
         }
 
         return try self.readI64AssumePrefix();
@@ -254,24 +280,30 @@ pub const RedisReader = struct {
         } else if (prefix == .simple_string) {
             const s = try self.readSimpleStringAssumePrefix();
             defer self.allocator.free(s);
-            const i = std.fmt.parseInt(i64, s, 10) catch |err| {
-                self.last_error.parse_error = err;
-                return error.InvalidInteger;
+            const i = std.fmt.parseInt(i64, s, 10) catch {
+                self.last_error.msg = "invalid integer format";
+                self.last_error.source = "readI64String";
+                return RedisReaderErr.InvalidValue;
             };
             return i;
         } else if (prefix == .string) {
             const s = try self.readBulkStringAssumePrefix();
             if (s == null) {
-                return error.InvalidInteger;
+                self.last_error.msg = "invalid integer format: string is null";
+                self.last_error.source = "readI64String";
+                return RedisReaderErr.InvalidValue;
             }
             defer self.allocator.free(s.?);
-            const i = std.fmt.parseInt(i64, s.?, 10) catch |err| {
-                self.last_error.parse_error = err;
-                return error.InvalidInteger;
+            const i = std.fmt.parseInt(i64, s.?, 10) catch {
+                self.last_error.msg = "invalid integer format";
+                self.last_error.source = "readI64String";
+                return RedisReaderErr.InvalidValue;
             };
             return i;
         } else {
-            return RedisReaderErr.InvalidTypePrefix;
+            self.last_error.msg = "expected int or string representation, but got something else instead";
+            self.last_error.source = "readI64String";
+            return RedisReaderErr.InvalidValue;
         }
     }
 
@@ -296,10 +328,15 @@ pub const RedisReader = struct {
         while (self.peekByte() != CR) {
             if (iteration >= 18) {
                 // reached max number of digits
-                return RedisReaderErr.IntegerTooBig;
+                try self.discardUntilCLRF();
+
+                self.last_error.msg = "int is outside of int64 range";
+                self.last_error.source = "readI64AssumePrefix";
+                return RedisReaderErr.InvalidValue;
             }
 
             b = try self.peekDigit();
+            // TODO properly check overflow
             v = v * 10 + b;
             iteration += 1;
             _ = try self.readByte();
@@ -307,7 +344,9 @@ pub const RedisReader = struct {
 
         std.debug.assert(self.peekByte() == CR);
         if (try self.readByte() != LF) {
-            return RedisReaderErr.InvalidDigit;
+            self.last_error.msg = "expected LF after CR, but got something else instead";
+            self.last_error.source = "readI64AssumePrefix";
+            return RedisReaderErr.ProtocolError;
         }
 
         if (is_negative) {
@@ -322,21 +361,29 @@ pub const RedisReader = struct {
         if (b >= '0' and b <= '9') {
             return b - '0';
         }
-        return RedisReaderErr.InvalidDigit;
+
+        // NOTE recoverable error
+        self.last_error.msg = "expected a digit 0-9, but got something else instead";
+        self.last_error.source = "peekDigit";
+        return RedisReaderErr.ProtocolError;
     }
 
     pub fn readEnum(self: *Self, comptime T: type) RedisReaderErr!T {
         // const command_max_length = comptime getCommandMaxLength();
         const str = try self.readString();
         if (str == null) {
-            return RedisReaderErr.InvalidEnum;
+            self.last_error.msg = "expected string representation of " ++ @typeName(T) ++ " enum but got null";
+            self.last_error.source = "readEnum";
+            return RedisReaderErr.InvalidValue;
         }
         _ = std.ascii.lowerString(str.?, str.?);
         const value: ?T = std.meta.stringToEnum(T, str.?);
         defer self.allocator.free(str.?);
         if (value == null) {
             std.log.err("invalid command enum: {s}", .{str.?});
-            return RedisReaderErr.InvalidEnum;
+            self.last_error.msg = "expected string representation of " ++ @typeName(T) ++ " enum but got invalid value";
+            self.last_error.source = "readEnum";
+            return RedisReaderErr.InvalidValue;
         } else {
             return value.?;
         }
@@ -350,7 +397,9 @@ pub const RedisReader = struct {
         } else if (typ == .string) {
             return self.readBulkStringAssumePrefix();
         } else {
-            return RedisReaderErr.InvalidStringType;
+            self.last_error.msg = "expected string value, but got something else instead";
+            self.last_error.source = "readString";
+            return RedisReaderErr.InvalidValue;
         }
     }
 
@@ -370,7 +419,9 @@ pub const RedisReader = struct {
             try self.readCRLF();
 
             if (bytes_read < b.len) {
-                return RedisReaderErr.BufferDidNotReadEnough;
+                self.last_error.msg = "while reading bulk string did not entire length of the buffer";
+                self.last_error.source = "readBulkStringAssumePrefix";
+                return RedisReaderErr.ProtocolError;
             }
             return b;
         }
@@ -384,7 +435,9 @@ pub const RedisReader = struct {
     pub fn readArrayHeader(self: *Self) RedisReaderErr!i64 {
         const prefix = try self.readTypePrefix();
         if (prefix != .array) {
-            return RedisReaderErr.InvalidTypePrefix;
+            self.last_error.msg = @ptrCast(@alignCast("expected array, but got something else instead"));
+            self.last_error.source = @ptrCast(@alignCast("readArrayHeader"));
+            return RedisReaderErr.InvalidValue;
         }
 
         return try self.readArrayHeaderAssumePrefix();
@@ -408,11 +461,16 @@ pub const RedisReader = struct {
     }
 
     fn discardWithRecursionDepth(self: *Self, recursion_depth: u8) RedisReaderErr!TypePrefixEnum {
-        if (recursion_depth == 0) {
-            return RedisReaderErr.RecursionDepth;
-        }
-
         const typ = try self.readTypePrefix();
+
+        try self.discardTypeWithRecursionDepth(typ, recursion_depth);
+        return typ;
+    }
+
+    fn discardTypeWithRecursionDepth(self: *Self, typ: TypePrefixEnum, recursion_depth: u8) RedisReaderErr!void {
+        if (recursion_depth == 0) {
+            return RedisReaderErr.RecursionLimitExceeded;
+        }
 
         switch (typ) {
             TypePrefixEnum.simple_string => {
@@ -428,9 +486,6 @@ pub const RedisReader = struct {
             TypePrefixEnum.int => {
                 try self.discardUntilCLRF();
             },
-            TypePrefixEnum.err => {
-                try self.discardUntilCLRF();
-            },
             TypePrefixEnum.array => {
                 const arr_len = try self.readArrayHeader();
                 if (arr_len > 0) {
@@ -440,17 +495,174 @@ pub const RedisReader = struct {
                 }
             },
         }
-
-        return typ;
     }
 
-    pub fn parameters(
+    pub fn readParameters(
         self: *Self,
         max_arguments: usize,
         comptime pos_t: type,
         comptime f_t: type,
     ) RedisReaderErr!Parameters(pos_t, f_t) {
-        return readParameters(self, max_arguments, pos_t, f_t);
+        const pos_ti = @typeInfo(pos_t);
+        const f_ti = @typeInfo(f_t);
+
+        if (f_ti != .Struct) {
+            @compileError("f_t must be a struct");
+        }
+        if (pos_ti != .Struct) {
+            @compileError("pos_t must be a struct");
+        }
+
+        const pos_tis = pos_ti.Struct;
+        const f_tis = f_ti.Struct;
+
+        // validate flags type
+        if (f_tis.is_tuple) {
+            @compileError("pos_t cannot be a tuple struct");
+        }
+        inline for (f_tis.fields) |field| {
+            const ti = @typeInfo(field.type);
+            if (ti != .Optional) {
+                @compileError("all flags must be optional");
+            }
+            const t = ti.Optional.child;
+            if (t != i64 and t != []const u8 and t != bool) {
+                @compileError("all flags must be i64 or []const u8");
+            }
+        }
+
+        // validate positional args
+        comptime var optional = false;
+        comptime var required_args: usize = 0;
+        inline for (pos_tis.fields) |field| {
+            comptime var t = field.type;
+            comptime var ti = @typeInfo(t);
+
+            if (ti == .Optional) {
+                optional = true;
+                t = ti.Optional.child;
+                ti = @typeInfo(t);
+            } else {
+                if (optional) {
+                    @compileError("required positional argument cannot follow non-optional one");
+                }
+                required_args += 1;
+            }
+
+            if (t != i64 and t != []const u8) {
+                @compileError("each field of positional must be []const u8 or i64");
+            }
+        }
+
+        var pos: pos_t = comptime getDefaultValue(pos_t);
+        var flags: f_t = comptime getDefaultValue(f_t);
+        var flag_name: ?[]const u8 = null;
+        var read_args: usize = 0;
+
+        inline for (0..pos_tis.fields.len) |i| {
+            const field = pos_tis.fields[i];
+
+            if (read == max_arguments) {
+                if (i < required_args) {
+                    return RedisReaderErr.InvalidParameters;
+                } else {
+                    break;
+                }
+            }
+
+            read_args += 1;
+
+            if (i < required_args) {
+                if (field.type == []const u8) {
+                    @field(pos, field.name) = try self.readString();
+                } else if (field.type == i64) {
+                    @field(pos, field.name) = try self.readI64String();
+                } else {
+                    unreachable;
+                }
+            } else {
+                if (field.type == []const u8) {
+                    const maybe_str = try self.readString();
+                    if (maybe_str) |str| {
+                        if (isFlag(f_t, str)) {
+                            // start reading flags instead
+                            flag_name = str;
+                        } else {
+                            // just a string
+                            @field(pos, field.name) = str;
+                        }
+                    } else {
+                        break;
+                    }
+                } else {
+                    const value = try self.readValue();
+
+                    if (value == .int) {
+                        @field(pos, field.name) = value.int;
+                    } else if (value == .string) {
+                        const maybe_str = value.string;
+                        if (maybe_str) |str| {
+                            if (isFlag(f_t, str)) {
+                                // start reading flags instead
+                                flag_name = str;
+                                break;
+                            } else {
+                                // just a string which is not valid in this case
+                                return RedisReaderErr.InvalidParameters;
+                            }
+                        }
+                    } else if (value == .array_header) {
+                        return RedisReaderErr.InvalidParameters;
+                    } else {
+                        unreachable;
+                    }
+                }
+            }
+        }
+
+        var remaining_flags: usize = f_tis.fields.len;
+
+        outer: while (remaining_flags > 0) {
+            if (flag_name == null) {
+                if (read_args == max_arguments) {
+                    break :outer;
+                }
+
+                flag_name = try self.readString();
+                if (flag_name == null) {
+                    break;
+                }
+            }
+
+            const f = flag_name.?;
+
+            inline for (f_tis.fields) |field| {
+                const t = @typeInfo(field.type).Optional.child;
+                if (std.ascii.eqlIgnoreCase(field.name, f)) {
+                    remaining_flags -= 1;
+                    if (t == i64) {
+                        if (read == max_arguments) {
+                            return ReadParametersError.NotEnoughParameters;
+                        }
+                        @field(flags, field.name) = try self.readI64String();
+                        read_args += 1;
+                    } else if (t == []const u8) {
+                        if (read == max_arguments) {
+                            return ReadParametersError.NotEnoughParameters;
+                        }
+                        @field(flags, field.name) = try self.readString();
+                        read_args += 1;
+                    } else if (t == bool) {
+                        @field(flags, field.name) = true;
+                    } else {
+                        unreachable;
+                    }
+                    break;
+                }
+            }
+        }
+
+        return Parameters(pos_t, f_t).init(self.allocator, pos, flags, read);
     }
 };
 
@@ -463,10 +675,9 @@ pub const RedisWriter = struct {
     pub const Error = RedisWriterErr;
 
     allocator: Allocator,
-
     writer: AnyWriter,
-
     last_error: LastWriterErrorInfo = .{},
+    written_something: bool = false,
 
     const Self = @This();
 
@@ -501,6 +712,7 @@ pub const RedisWriter = struct {
     }
 
     inline fn writeInteger(self: *Self, v: anytype) RedisWriterErr!void {
+        self.written_something = true;
         try self.writeByte(INT_PREFIX);
         try self.internalWriteInteger(v);
         try self.internalWriteCRLF();
@@ -521,6 +733,7 @@ pub const RedisWriter = struct {
     }
 
     pub fn writeArrayHeader(self: *Self, v: anytype) RedisWriterErr!void {
+        self.written_something = true;
         try self.writeByte(ARRAY_PREFIX);
         try self.internalWriteInteger(v);
         try self.internalWriteCRLF();
@@ -538,12 +751,14 @@ pub const RedisWriter = struct {
     }
 
     pub fn writeError(self: *Self, err: []const u8) RedisWriterErr!void {
+        self.written_something = true;
         try self.writeByte(ERROR_PREFIX);
         try self.write(err);
         try self.internalWriteCRLF();
     }
 
     pub fn writeBulkString(self: *Self, v: []const u8) RedisWriterErr!void {
+        self.written_something = true;
         std.debug.assert(v.len <= 524288000); // 500 Mebibytes is max size for a redis bulk string
         _ = self.writer.writeByte(STRING_PREFIX) catch |err| {
             log.err("[writeI64] WriteError {}", .{err});
@@ -652,6 +867,8 @@ pub fn Parameters(
     comptime pos_t: type,
     comptime f_t: type,
 ) type {
+    const f_tis = @typeInfo(f_t).Struct;
+
     return struct {
         positional_args: pos_t,
         flags: f_t,
@@ -666,175 +883,22 @@ pub fn Parameters(
         ) @This() {
             return .{ .flags = flags, .positional_args = positional_args, .allocator = allocator, .arguments_read = arguments_read };
         }
+
+        pub fn deinit(self: @This()) void {
+            inline for (f_tis.fields) |field| {
+                if (field.type == ?[]const u8) {
+                    if (@field(self.flags, field.name)) |v| {
+                        self.allocator.free(v);
+                    }
+                } else if (field.type == ?i64) {} else {
+                    comptime unreachable;
+                }
+            }
+        }
     };
 }
 
-pub fn readParameters(
-    r: *RedisReader,
-    max_arguments: usize,
-    comptime pos_t: type,
-    comptime f_t: type,
-) RedisReaderErr!Parameters(pos_t, f_t) {
-    const pos_ti = @typeInfo(pos_t);
-    const f_ti = @typeInfo(f_t);
-
-    if (f_ti != .Struct) {
-        @compileError("f_t must be a struct");
-    }
-    if (pos_ti != .Struct) {
-        @compileError("pos_t must be a struct");
-    }
-
-    const pos_tis = pos_ti.Struct;
-    const f_tis = f_ti.Struct;
-
-    // validate flags type
-    if (f_tis.is_tuple) {
-        @compileError("pos_t cannot be a tuple struct");
-    }
-    inline for (f_tis.fields) |field| {
-        const ti = @typeInfo(field.type);
-        if (ti != .Optional) {
-            @compileError("all flags must be optional");
-        }
-        const t = ti.Optional.child;
-        if (t != i64 and t != []const u8 and t != bool) {
-            @compileError("all flags must be i64 or []const u8");
-        }
-    }
-
-    // validate positional args
-    comptime var optional = false;
-    comptime var required_args: usize = 0;
-    inline for (pos_tis.fields) |field| {
-        comptime var t = field.type;
-        comptime var ti = @typeInfo(t);
-
-        if (ti == .Optional) {
-            optional = true;
-            t = ti.Optional.child;
-            ti = @typeInfo(t);
-        } else {
-            if (optional) {
-                @compileError("required positional argument cannot follow non-optional one");
-            }
-            required_args += 1;
-        }
-
-        if (t != i64 and t != []const u8) {
-            @compileError("each field of positional must be []const u8 or i64");
-        }
-    }
-
-    var pos: pos_t = comptime getDefaultValue(pos_t);
-    var flags: f_t = comptime getDefaultValue(f_t);
-    var flag_name: ?[]const u8 = null;
-    var read: usize = 0;
-
-    inline for (0..pos_tis.fields.len) |i| {
-        const field = pos_tis.fields[i];
-
-        if (read == max_arguments) {
-            if (i < required_args) {
-                return error.NotEnoughArguments;
-            } else {
-                break;
-            }
-        }
-
-        read += 1;
-
-        if (i < required_args) {
-            if (field.type == []const u8) {
-                @field(pos, field.name) = try r.readString();
-            } else if (field.type == i64) {
-                @field(pos, field.name) = try r.readI64String();
-            } else {
-                unreachable;
-            }
-        } else {
-            if (field.type == []const u8) {
-                const maybe_str = try r.readString();
-                if (maybe_str) |str| {
-                    if (isFlag(f_t, str)) {
-                        // start reading flags instead
-                        flag_name = str;
-                    } else {
-                        // just a string
-                        @field(pos, field.name) = str;
-                    }
-                } else {
-                    break;
-                }
-            } else {
-                const value = try r.readValue();
-
-                if (value == .int) {
-                    @field(pos, field.name) = value.int;
-                } else if (value == .string) {
-                    const maybe_str = value.string;
-                    if (maybe_str) |str| {
-                        if (isFlag(f_t, str)) {
-                            // start reading flags instead
-                            flag_name = str;
-                            break;
-                        } else {
-                            // just a string which is not valid in this case
-                            return error.InvalidTypePrefix;
-                        }
-                    }
-                } else if (value == .array_header) {
-                    return error.InvalidTypePrefix;
-                } else {
-                    unreachable;
-                }
-            }
-        }
-    }
-
-    var remaining_flags: usize = f_tis.fields.len;
-
-    outer: while (remaining_flags > 0) {
-        if (flag_name == null) {
-            if (read == max_arguments) {
-                break :outer;
-            }
-
-            flag_name = try r.readString();
-            if (flag_name == null) {
-                break;
-            }
-        }
-
-        const f = flag_name.?;
-
-        inline for (f_tis.fields) |field| {
-            if (std.ascii.eqlIgnoreCase(field.name, f)) {
-                remaining_flags -= 1;
-                if (field.type == i64) {
-                    if (read == max_arguments) {
-                        return error.NotEnoughArguments;
-                    }
-                    @field(flags, field.name) = try r.readI64();
-                    read += 1;
-                } else if (field.type == []const u8) {
-                    if (read == max_arguments) {
-                        return error.NotEnoughArguments;
-                    }
-                    @field(flags, field.name) = try r.readI64String();
-                    read += 1;
-                } else if (field.type == bool) {
-                    @field(flags, field.name) = true;
-                } else {
-                    unreachable;
-                }
-                break;
-            }
-        }
-    }
-
-    return Parameters(pos_t, f_t).init(r.allocator, pos, flags, read);
-}
+pub const ReadParametersError = RedisReaderErr;
 
 fn getDefaultValue(comptime T: type) T {
     const type_info = @typeInfo(T);

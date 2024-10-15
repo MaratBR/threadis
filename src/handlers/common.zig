@@ -44,6 +44,7 @@ pub const Context = struct {
         self.command = command;
         self.read_command_arguments = 0;
         self.command_arguments = arguments_count;
+        self.redis_writer.written_something = false;
     }
 
     pub fn deinit(self: *Self) void {
@@ -135,7 +136,7 @@ pub const Context = struct {
         comptime f_t: type,
     ) redis.RedisReaderErr!redis.Parameters(pos_t, f_t) {
         const max_arguments = self.command_arguments - self.read_command_arguments;
-        const params = try self._redis_reader.parameters(max_arguments, pos_t, f_t);
+        const params = try self._redis_reader.readParameters(max_arguments, pos_t, f_t);
         std.debug.assert(params.arguments_read <= max_arguments);
         self.read_command_arguments += params.arguments_read;
         return params;

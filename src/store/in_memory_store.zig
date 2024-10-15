@@ -302,11 +302,15 @@ pub const InMemoryStore = struct {
         seg_iterator: ?Segment.ScanIterator = null,
 
         pub fn init(store: *Self, c: i64, count: usize, pattern: []const u8) @This() {
-            const cursor_cast = @as(u48, @intCast(c));
-            const segment_idx = @as(u16, @intCast((cursor_cast >> 32) & 0xffff));
-            const segment_cursor: u32 = @intCast(cursor_cast & ~@as(u48, 0xffff << 32));
+            const cursor_ = Cursor.fromI64(c);
 
-            return .{ .store = store, .segment_idx = segment_idx, .segment_cursor = segment_cursor, .remaining = count, .pattern = pattern };
+            return .{
+                .store = store,
+                .segment_idx = cursor_.segment_idx,
+                .segment_cursor = cursor_.segment_cursor,
+                .remaining = count,
+                .pattern = pattern,
+            };
         }
 
         pub fn cursor(self: *const @This()) i64 {
@@ -369,18 +373,22 @@ pub const InMemoryStore = struct {
     }
 };
 
-// const Cursor = packed struct {
-//     segment_idx: u16,
-//     segment_cursor: u32,
+const Cursor = packed struct {
+    segment_idx: u16,
+    segment_cursor: u32,
 
-//     pub fn init(v: u48) Cursor {
-//         return .{
-//             .segment_idx = @truncate(v >> 32),
-//             .segment_cursor = @truncate(v),
-//         };
-//     }
+    pub fn init(v: u48) Cursor {
+        return .{
+            .segment_idx = @truncate(v >> 32),
+            .segment_cursor = @truncate(v),
+        };
+    }
 
-//     pub fn fromI64(v: i64) Cursor {
-//         return Cursor.init(@intCast(v));
-//     }
-// };
+    pub fn fromI64(v: i64) Cursor {
+        if (v < 0) {
+            return Cursor.init(0);
+        } else {
+            return Cursor.init(@truncate(@as(u64, @intCast(v))));
+        }
+    }
+};

@@ -4,12 +4,12 @@ const common = @import("./common.zig");
 const Context = common.Context;
 
 fn handle(ctx: *Context) !void {
-    const args = try ctx.readParameters(struct { cursor: ?i64 }, struct { match: ?[]const u8 });
+    const args = try ctx.readParameters(struct { cursor: ?i64 }, struct { match: ?[]const u8, count: ?i64 });
+    defer args.deinit();
     const cursor = args.positional_args.cursor orelse 0;
+    const count = @as(usize, @intCast(args.flags.count orelse 10));
 
-    std.debug.print("cursor={} match={?s}\n", .{ cursor, args.flags.match });
-
-    var it = ctx.store.scan(cursor, 3, "*");
+    var it = ctx.store.scan(cursor, count, "*");
     defer it.deinit();
 
     var keys = std.ArrayList([]const u8).init(ctx.allocator);
